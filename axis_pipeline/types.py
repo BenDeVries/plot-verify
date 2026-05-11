@@ -153,7 +153,7 @@ class AxisCalibration:
     scale: float        # data units per pixel  (slope of data = scale*pixel + offset)
     offset: float       # data value at pixel 0
     n_points: int
-    method: str         # "ols" | "student_t" | "two_point"
+    method: str         # "ols" | "two_point"
     rmse_px: float      # residual RMS in pixel coordinates
     rmse_data: float    # residual RMS in data coordinates
     log_likelihood: Optional[float] = None
@@ -228,8 +228,6 @@ class CalibrationConfig:
     pair_max_distance_abs_px: float = 80.0
     # Calibration
     scale_type: str = ScaleType.LINEAR.value
-    use_robust_regression: bool = True   # Student-t MLE if more than 2 paired points
-    student_t_df: float = 4.0
     # Misc
     enable_phase_b_y_band: bool = True
     enable_phase_c_x_band: bool = True

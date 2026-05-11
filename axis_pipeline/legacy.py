@@ -38,7 +38,6 @@ def auto_detect_axes_and_ticks(img_bgr) -> Dict[str, object]:
     cfg = CalibrationConfig(
         enable_phase_b_y_band=False,
         enable_phase_c_x_band=False,
-        use_robust_regression=False,
     )
 
     # OCR runner returns no records — equivalent to "OCR disabled".
@@ -58,8 +57,6 @@ def auto_detect_axes_ticks_ocr(
     mask_all_text: bool = True,    # kept for signature compatibility
     gpu: bool = False,
     min_ocr_confidence: float = 0.20,
-    use_robust_regression: bool = True,
-    student_t_df: float = 4.0,
 ) -> Dict[str, object]:
     """OCR-assisted path. If `use_ocr=False`, falls back to geometry-only."""
     if not use_ocr:
@@ -72,8 +69,6 @@ def auto_detect_axes_ticks_ocr(
         use_gpu=bool(gpu),
         enable_phase_b_y_band=True,
         enable_phase_c_x_band=True,
-        use_robust_regression=bool(use_robust_regression),
-        student_t_df=float(student_t_df),
     )
     try:
         result = run_calibration(img_bgr, config=cfg)
@@ -131,7 +126,7 @@ def update_detection_from_tick_tables(
 ) -> Dict[str, object]:
     """Apply edited Streamlit tick tables to a legacy detection dict.
 
-    Re-runs the calibration math (least squares / Student-t) on the edited
+    Re-runs OLS calibration (with Cook's distance filtering) on the edited
     pairs and updates the anchor points P1/P2/P3 + their data values.
     """
     out = dict(detection)
@@ -154,11 +149,8 @@ def update_detection_from_tick_tables(
     x_paired = [_row_to_paired(r) for r in x_rows]
     y_paired = [_row_to_paired(r) for r in y_rows]
 
-    cfg = CalibrationConfig()  # default robust=True
-    x_cal = calibrate_axis(x_paired, use_robust=cfg.use_robust_regression,
-                           student_t_df=cfg.student_t_df)
-    y_cal = calibrate_axis(y_paired, use_robust=cfg.use_robust_regression,
-                           student_t_df=cfg.student_t_df)
+    x_cal = calibrate_axis(x_paired)
+    y_cal = calibrate_axis(y_paired)
     out["x_calibration"] = x_cal.to_dict() if x_cal else None
     out["y_calibration"] = y_cal.to_dict() if y_cal else None
 

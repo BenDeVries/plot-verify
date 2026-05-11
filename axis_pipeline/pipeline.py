@@ -290,16 +290,8 @@ def run_calibration(
         ))
 
     # ── Calibration ───────────────────────────────────────────────
-    x_cal = calibrate_axis(
-        x_paired,
-        use_robust=cfg.use_robust_regression,
-        student_t_df=cfg.student_t_df,
-    )
-    y_cal = calibrate_axis(
-        y_paired,
-        use_robust=cfg.use_robust_regression,
-        student_t_df=cfg.student_t_df,
-    )
+    x_cal = calibrate_axis(x_paired)
+    y_cal = calibrate_axis(y_paired)
 
     # If calibration came back None despite having ≥2 paired ticks, it's because
     # the values were degenerate (all the same). Surface a specific, actionable

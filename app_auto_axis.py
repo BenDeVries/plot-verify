@@ -11,6 +11,8 @@ Run with:
 import colorsys
 import hashlib
 import io
+import os
+import tempfile
 
 import cv2
 import numpy as np
@@ -100,6 +102,18 @@ def _delta_e_mask(img_bgr, hex_color, threshold=30.0):
 
     kernel = np.ones((3, 3), np.uint8)
     return cv2.dilate(mask, kernel, iterations=2)
+
+
+def hex_complement(hex_color: str) -> str:
+    """Return the hue-opposite color of hex_color (hue shifted 180°, same S and V)."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    hue, sat, val = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+    comp_hue = (hue + 0.5) % 1.0
+    cr, cg, cb = colorsys.hsv_to_rgb(comp_hue, sat, val)
+    return "#{:02x}{:02x}{:02x}".format(
+        int(round(cr * 255)), int(round(cg * 255)), int(round(cb * 255))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +381,49 @@ def build_composite(img_bgr, image_hash, series_states, df, cal):
     return cv2.cvtColor(composite, cv2.COLOR_BGR2RGB)
 
 
+def build_calibration_image(img_bgr, image_hash, series_states, df):
+    """Build a BGR image for calibration with hidden series replaced by the plot background.
+
+    Unlike build_composite, starts from the original image (no grey dimming) so
+    the background color is preserved. Used by the calibration pipeline.
+    """
+    composite = img_bgr.copy()
+
+    grey_1ch = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hist = np.bincount(grey_1ch.ravel(), minlength=256)
+    bg_grey = int(np.argmax(hist))
+    bg_color = np.array([bg_grey, bg_grey, bg_grey], dtype=np.uint8)
+
+    for series_name, state in series_states.items():
+        if st.session_state.get(f"vis_{series_name}", True):
+            continue
+        mask = _get_series_mask(image_hash, series_name, state, df, img_bgr)
+        composite[mask > 0] = bg_color
+
+    return composite
+
+
+def _update_calibration_masked_image():
+    """Rebuild the calibration masked image from current session state and write to a temp file."""
+    img_bgr = st.session_state.get("image_bgr")
+    if img_bgr is None:
+        return
+    image_hash = st.session_state.get("image_hash")
+    series_states = st.session_state.get("series_states", {})
+    df = st.session_state.get("df")
+
+    masked = build_calibration_image(img_bgr, image_hash, series_states, df)
+
+    path = st.session_state.get("cal_masked_img_path")
+    if not path:
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="plotverify_cal_")
+        os.close(fd)
+        st.session_state["cal_masked_img_path"] = path
+
+    cv2.imwrite(path, masked)
+    st.session_state["cal_masked_img_bgr"] = masked
+
+
 # ---------------------------------------------------------------------------
 # Plotly overlay (Tab 2)
 # ---------------------------------------------------------------------------
@@ -407,6 +464,7 @@ def build_overlay_figure(img_rgb, df, series_states, cal):
         color_hex = sdf["series_color"].iloc[0]
         if not is_valid_hex(color_hex):
             color_hex = FALLBACK_HEX
+        overlay_hex = hex_complement(color_hex)
 
         y_vals = sdf["y"].to_numpy(dtype=float)
         eu = sdf["y_err_upper"].to_numpy(dtype=float)
@@ -419,7 +477,7 @@ def build_overlay_figure(img_rgb, df, series_states, cal):
             error_y = dict(
                 type="data", symmetric=False,
                 array=arr_plus, arrayminus=arr_minus,
-                color=color_hex, thickness=1.5, width=4,
+                color=overlay_hex, thickness=1.5, width=4,
             )
         else:
             error_y = None
@@ -427,14 +485,42 @@ def build_overlay_figure(img_rgb, df, series_states, cal):
         state = series_states.get(series_name, {})
         visible = True if st.session_state.get(f"vis_{series_name}", True) else "legendonly"
 
+        # Ribbon: fill between y_err_lower and y_err_upper where both are finite.
+        if has_err.any():
+            h_str = overlay_hex.lstrip("#")
+            fill_rgba = "rgba({},{},{},0.2)".format(
+                int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
+            )
+            x_rib = sdf["x"].to_numpy(dtype=float)[has_err]
+            y_upper = eu[has_err]
+            y_lower = el[has_err]
+            sort_idx = np.argsort(x_rib)
+            x_rib = x_rib[sort_idx]
+            y_upper = y_upper[sort_idx]
+            y_lower = y_lower[sort_idx]
+            fig.add_trace(go.Scatter(
+                x=x_rib, y=y_upper,
+                mode="lines", line=dict(width=0),
+                legendgroup=str(series_name),
+                showlegend=False, visible=visible, hoverinfo="skip",
+            ))
+            fig.add_trace(go.Scatter(
+                x=x_rib, y=y_lower,
+                mode="lines", line=dict(width=0),
+                fill="tonexty", fillcolor=fill_rgba,
+                legendgroup=str(series_name),
+                showlegend=False, visible=visible, hoverinfo="skip",
+            ))
+
         fig.add_trace(go.Scatter(
             x=sdf["x"],
             y=sdf["y"],
             mode="lines+markers",
-            line=dict(color=color_hex, width=2),
-            marker=dict(color=color_hex, size=8,
+            line=dict(color=overlay_hex, width=2),
+            marker=dict(color=overlay_hex, size=8,
                         line=dict(color="rgba(0,0,0,0.5)", width=0.5)),
             name=str(series_name),
+            legendgroup=str(series_name),
             error_y=error_y,
             visible=visible,
         ))
@@ -467,7 +553,6 @@ def _init_state():
     st.session_state.setdefault("ocr_mask_all_text", True)
     st.session_state.setdefault("ocr_min_confidence", 0.20)
     st.session_state.setdefault("show_ocr_debug_overlay", True)
-    st.session_state.setdefault("use_robust_regression", True)
     # Calibration-preview tab state.
     # Cache key: image_hash → FramePreview, so slider changes don't re-run
     # Phase A OCR. Per-image overrides are stored separately under
@@ -476,46 +561,8 @@ def _init_state():
     st.session_state.setdefault("frame_preview_run_count", 0)
     st.session_state.setdefault("copy_detected_result", None)
     st.session_state.setdefault("apply_calibration_result", None)
-
-
-
-def _run_auto_axis_detection():
-    """Run button-triggered automatic axis/tick detection for the current image."""
-    if "image_bgr" not in st.session_state:
-        st.warning("Upload an image before running auto axis detection.")
-        return
-
-    image_hash = st.session_state.get("image_hash")
-    overrides = st.session_state.get(_band_overrides_key(image_hash), {})
-    default_cfg = CalibrationConfig()
-
-    cal_result = None
-    if not bool(st.session_state.get("use_ocr_axis", True)):
-        detection = auto_detect_axes_and_ticks(st.session_state.image_bgr)
-        detection["ocr_enabled"] = False
-    else:
-        cfg = CalibrationConfig(
-            use_gpu=False,
-            min_ocr_confidence=float(st.session_state.get("ocr_min_confidence", 0.20)),
-            use_robust_regression=bool(st.session_state.get("use_robust_regression", True)),
-            y_band_extra_px=int(overrides.get("y_band_extra_px", default_cfg.y_band_extra_px)),
-            y_band_extra_vertical_px=int(overrides.get("y_band_extra_vertical_px", default_cfg.y_band_extra_vertical_px)),
-            x_band_extra_px=int(overrides.get("x_band_extra_px", default_cfg.x_band_extra_px)),
-            x_band_extra_horizontal_px=int(overrides.get("x_band_extra_horizontal_px", default_cfg.x_band_extra_horizontal_px)),
-        )
-        try:
-            cal_result = run_calibration(st.session_state.image_bgr, config=cfg)
-            detection = cal_result.to_legacy_dict()
-        except Exception as e:
-            detection = auto_detect_axes_and_ticks(st.session_state.image_bgr)
-            detection.setdefault("warnings", []).append(
-                f"OCR pipeline failed; fell back to geometry-only. {type(e).__name__}: {e}"
-            )
-            detection["ocr_enabled"] = False
-
-    st.session_state.auto_axis_detection = detection
-    st.session_state.auto_axis_result = cal_result
-    st.session_state.auto_axis_image_hash = image_hash
+    st.session_state.setdefault("cal_masked_img_path", None)
+    st.session_state.setdefault("cal_masked_img_bgr", None)
 
 
 
@@ -557,21 +604,46 @@ def _use_detected_values_in_manual_fields():
 
 
 
-def _callback_apply_detected_calibration():
-    """on_click callback for 'Apply detected calibration now'.
+def _callback_copy_detected_values():
+    """on_click callback for 'Load detected values' inside the Manual override expander.
 
-    Runs BEFORE the next render pass so widget-keyed session state can be
-    written without triggering StreamlitAPIException. Stores a result string
-    in session_state["apply_calibration_result"] for the render pass to display.
+    Writes detected coords into the manual fields BEFORE the next render pass.
     """
     if not _auto_detection_available():
-        st.session_state.apply_calibration_result = "error:No auto-detection available for the current image."
+        st.session_state.copy_detected_result = "error:No auto-detection available for the current image."
         return
-    detection = st.session_state.auto_axis_detection
-    ok = _set_manual_fields_from_detection(detection)
-    if not ok:
-        st.session_state.apply_calibration_result = "error:Could not extract all calibration points from detection. Review detection output."
-        return
+    if _set_manual_fields_from_detection(st.session_state.auto_axis_detection):
+        st.session_state.copy_detected_result = "ok"
+    else:
+        st.session_state.copy_detected_result = "error:Could not load detection values — not all calibration points were found."
+
+
+def _manual_fields_are_empty():
+    """True when every P1/P2/P3 pixel field is unset (zero / unset)."""
+    keys = ("p1_px_x", "p1_px_y", "p2_px_x", "p2_px_y", "p3_px_x", "p3_px_y")
+    return all(abs(float(st.session_state.get(k, 0.0))) < 1e-9 for k in keys)
+
+
+def _callback_apply_calibration():
+    """on_click callback for the bottom 'Apply Calibration' primary button.
+
+    If the manual P1/P2/P3 fields are empty AND a detection is available,
+    pre-fills the fields from detection before computing the transform.
+    Otherwise applies whatever the user has in the manual fields. Stores the
+    outcome in session_state["apply_calibration_result"] for the render pass
+    to display.
+    """
+    used_detection = False
+    if _manual_fields_are_empty() and _auto_detection_available():
+        ok = _set_manual_fields_from_detection(st.session_state.auto_axis_detection)
+        if not ok:
+            st.session_state.apply_calibration_result = (
+                "error:Could not extract all calibration points from detection — "
+                "open Manual override and enter values directly."
+            )
+            return
+        used_detection = True
+
     cal = compute_calibration(
         st.session_state.get("p1_px_x", 0.0), st.session_state.get("p1_px_y", 0.0),
         st.session_state.get("p2_px_x", 0.0), st.session_state.get("p2_px_y", 0.0),
@@ -582,35 +654,17 @@ def _callback_apply_detected_calibration():
         st.session_state.get("p1_data_y", 0.0),
     )
     if cal is None:
-        st.session_state.apply_calibration_result = "error:Calibration math failed — check that P1 and P2 have different pixel X coordinates."
+        st.session_state.apply_calibration_result = (
+            "error:Invalid points — P1 and P2 must differ in pixel X, "
+            "and P3 must differ in pixel Y from the X-axis baseline."
+        )
         return
-    cal["auto_axis_confidence"] = float(detection.get("confidence", 0.0))
-    cal["auto_axis_mode"] = detection.get("mode", "unknown")
+    if used_detection and _auto_detection_available():
+        det = st.session_state.auto_axis_detection
+        cal["auto_axis_confidence"] = float(det.get("confidence", 0.0))
+        cal["auto_axis_mode"] = det.get("mode", "unknown")
     st.session_state.calibration = cal
     st.session_state.apply_calibration_result = "ok"
-
-
-
-def _callback_copy_detected_values():
-    """on_click callback for 'Copy detected values to calibration fields'.
-
-    Runs BEFORE the next render pass so widget-keyed session state can be
-    written without triggering StreamlitAPIException. Stores a result string
-    in session_state["copy_detected_result"] for the render pass to display.
-    """
-    if not _auto_detection_available():
-        st.session_state.copy_detected_result = "error:No auto-detection available for the current image."
-        return
-    if _set_manual_fields_from_detection(st.session_state.auto_axis_detection):
-        st.session_state.copy_detected_result = "ok"
-    else:
-        st.session_state.copy_detected_result = "error:Could not copy detection values — not all calibration points were found."
-
-
-def _toggle_interp(series_name):
-    state = st.session_state.series_states.get(series_name)
-    if state is not None:
-        state["interpolate"] = not state.get("interpolate", False)
 
 
 def _load_image_from_upload(image_file):
@@ -631,7 +685,19 @@ def _load_image_from_upload(image_file):
     st.session_state.image_bgr = img_bgr
     st.session_state.image_hash = img_hash
     st.session_state.auto_axis_detection = None
+    st.session_state.auto_axis_result = None
     st.session_state.auto_axis_image_hash = None
+    st.session_state.frame_preview_cache = None
+    # Drop any calibration tied to the previous image — pixel coords no longer match.
+    st.session_state.calibration = {"applied": False}
+    for k in (
+        "p1_px_x", "p1_px_y", "p1_data_x", "p1_data_y",
+        "p2_px_x", "p2_px_y", "p2_data_x",
+        "p3_px_x", "p3_px_y", "p3_data_y",
+        "copy_detected_result", "apply_calibration_result",
+        "cal_masked_img_path", "cal_masked_img_bgr",
+    ):
+        st.session_state.pop(k, None)
 
 
 def _load_csv(csv_source):
@@ -682,7 +748,6 @@ def _init_series_states(df):
         except Exception:
             h, s, v = 0, 128, 128
         states[series_name] = {
-            "visible": True,
             "use_delta_e": True,
             "delta_e": 30,
             "h_min": max(0, h - 15),
@@ -741,14 +806,22 @@ def render_sidebar():
                 if st.session_state.csv_hash != csv_hash:
                     st.session_state.series_states = _init_series_states(new_df)
                     st.session_state.csv_hash = csv_hash
+                    # Clear the masked calibration image — series identities changed.
+                    st.session_state.pop("cal_masked_img_path", None)
+                    st.session_state.pop("cal_masked_img_bgr", None)
+                    # New CSV → series identities can differ; the prior calibration
+                    # may have been computed against a different y-baseline.
+                    if st.session_state.calibration.get("applied"):
+                        st.session_state.calibration = {"applied": False}
+                        st.toast("Calibration cleared — re-apply after new data.", icon="🔄")
                 df = new_df
 
-        # ----- Calibration status (read-only — controls are in the Calibration tab) -----
+        # ----- Calibration status (read-only — controls are in the Calibrate tab) -----
         if "image_rgb" in st.session_state:
             if st.session_state.calibration.get("applied"):
                 st.success("✓ Calibration applied")
             else:
-                st.caption("✗ Not calibrated — use the **Calibration** tab.")
+                st.caption("✗ Not calibrated — use the **Calibrate** tab.")
 
         # ----- Series Controls -----
         if df is not None and st.session_state.series_states:
@@ -781,10 +854,8 @@ def render_sidebar():
                         type=vis_type,
                         use_container_width=True,
                     ):
-                        new_vis = not is_visible
-                        st.session_state[f"vis_{series_name}"] = new_vis
-                        if series_name in st.session_state.series_states:
-                            st.session_state.series_states[series_name]["visible"] = new_vis
+                        st.session_state[f"vis_{series_name}"] = not is_visible
+                        _update_calibration_masked_image()
                         st.rerun()
 
                     state["use_delta_e"] = st.toggle(
@@ -802,44 +873,42 @@ def render_sidebar():
                         )
                     else:
                         st.caption("HSV manual sliders:")
-                    state["h_min"] = st.slider(
-                        "Hue min", 0, 179, int(state["h_min"]),
-                        key=f"hmin_{series_name}",
-                    )
-                    state["h_max"] = st.slider(
-                        "Hue max", 0, 179, int(state["h_max"]),
-                        key=f"hmax_{series_name}",
-                    )
-                    state["s_min"] = st.slider(
-                        "Saturation min", 0, 255, int(state["s_min"]),
-                        key=f"smin_{series_name}",
-                    )
-                    state["s_max"] = st.slider(
-                        "Saturation max", 0, 255, int(state["s_max"]),
-                        key=f"smax_{series_name}",
-                    )
-                    state["v_min"] = st.slider(
-                        "Value min", 0, 255, int(state["v_min"]),
-                        key=f"vmin_{series_name}",
-                    )
-                    state["v_max"] = st.slider(
-                        "Value max", 0, 255, int(state["v_max"]),
-                        key=f"vmax_{series_name}",
-                    )
+                        state["h_min"] = st.slider(
+                            "Hue min", 0, 179, int(state["h_min"]),
+                            key=f"hmin_{series_name}",
+                        )
+                        state["h_max"] = st.slider(
+                            "Hue max", 0, 179, int(state["h_max"]),
+                            key=f"hmax_{series_name}",
+                        )
+                        state["s_min"] = st.slider(
+                            "Saturation min", 0, 255, int(state["s_min"]),
+                            key=f"smin_{series_name}",
+                        )
+                        state["s_max"] = st.slider(
+                            "Saturation max", 0, 255, int(state["s_max"]),
+                            key=f"smax_{series_name}",
+                        )
+                        state["v_min"] = st.slider(
+                            "Value min", 0, 255, int(state["v_min"]),
+                            key=f"vmin_{series_name}",
+                        )
+                        state["v_max"] = st.slider(
+                            "Value max", 0, 255, int(state["v_max"]),
+                            key=f"vmax_{series_name}",
+                        )
 
-                    btn_type = "primary" if state.get("interpolate") else "secondary"
-                    btn_label = (
-                        "Interpolation: ON"
-                        if state.get("interpolate")
-                        else "Interpolate occluded segments"
-                    )
-                    st.button(
+                    interp_on = bool(state.get("interpolate"))
+                    btn_type = "primary" if interp_on else "secondary"
+                    btn_label = "Interpolation: ON" if interp_on else "Interpolate occluded segments"
+                    if st.button(
                         btn_label,
                         key=f"interp_btn_{series_name}",
                         type=btn_type,
-                        on_click=_toggle_interp,
-                        args=(series_name,),
-                    )
+                        use_container_width=True,
+                    ):
+                        state["interpolate"] = not interp_on
+                        st.rerun()
 
                     if state.get("interpolate") and not st.session_state.calibration.get("applied"):
                         st.info("Interpolation requires axis calibration.")
@@ -850,12 +919,12 @@ def render_sidebar():
             with st.expander("🔍 Debug: live state", expanded=False):
                 rows = []
                 for name in df["series"].drop_duplicates().tolist():
+                    state = st.session_state.series_states.get(name, {})
                     rows.append({
                         "series": name,
-                        "vis_key (st.session_state)":
-                            st.session_state.get(f"vis_{name}", "<unset>"),
-                        "visible (series_states dict)":
-                            st.session_state.series_states.get(name, {}).get("visible", "<unset>"),
+                        "visible": st.session_state.get(f"vis_{name}", "<unset>"),
+                        "mode": "ΔE" if state.get("use_delta_e") else "HSV",
+                        "interpolate": bool(state.get("interpolate")),
                     })
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -927,44 +996,221 @@ def _last_calibration_has_degenerate_warning(image_hash):
     return False
 
 
+def _render_detection_results(detection):
+    """Inner contents of the 'Detection results' expander."""
+    conf = float(detection.get("confidence", 0.0))
+    st.metric("Detection confidence", f"{conf:.2f}",
+              help=f"Mode: {detection.get('mode', 'unknown')}")
+    for w in detection.get("warnings", []) or []:
+        st.warning(w)
+
+    pts = []
+    for label in ["p1", "p2", "p3"]:
+        p = detection.get(label)
+        if not p:
+            continue
+        row = {"point": label.upper(), "pixel_x": float(p[0]), "pixel_y": float(p[1])}
+        if label == "p1":
+            row["data_x"] = detection.get("p1_data_x", st.session_state.get("p1_data_x", 0.0))
+            row["data_y"] = detection.get("p1_data_y", st.session_state.get("p1_data_y", 0.0))
+        elif label == "p2":
+            row["data_x"] = detection.get("p2_data_x", st.session_state.get("p2_data_x", 1.0))
+            row["data_y"] = detection.get("p1_data_y", st.session_state.get("p1_data_y", 0.0))
+        else:
+            row["data_x"] = detection.get("p3_data_x", 0.0)
+            row["data_y"] = detection.get("p3_data_y", st.session_state.get("p3_data_y", 1.0))
+        pts.append(row)
+    if pts:
+        st.markdown("**Detected calibration points**")
+        st.dataframe(pd.DataFrame(pts), use_container_width=True, hide_index=True)
+
+    x_cal = detection.get("x_calibration")
+    y_cal = detection.get("y_calibration")
+    x_grid = detection.get("x_grid_fit")
+    y_grid = detection.get("y_grid_fit")
+    if x_cal or y_cal or x_grid or y_grid:
+        st.markdown("**Per-axis fit diagnostics**")
+        diag_rows = []
+        for axis_name, cal_d, grid_d in [("X", x_cal, x_grid), ("Y", y_cal, y_grid)]:
+            if not cal_d:
+                continue
+            diag_rows.append({
+                "axis": axis_name,
+                "method": cal_d.get("method", ""),
+                "n_points": cal_d.get("n_points", 0),
+                "scale": cal_d.get("scale"),
+                "offset": cal_d.get("offset"),
+                "rmse_data": cal_d.get("rmse_data"),
+                "rmse_px": cal_d.get("rmse_px"),
+                "slope_SE": cal_d.get("slope_se"),
+                "grid_spacing_px": grid_d.get("spacing") if grid_d else None,
+                "grid_kept": len(grid_d.get("fitted_positions", [])) if grid_d else None,
+                "grid_rejected": len(grid_d.get("rejected_positions", [])) if grid_d else None,
+            })
+        if diag_rows:
+            st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
+
+    with st.expander("Raw detection diagnostics", expanded=False):
+        st.json({k: v for k, v in detection.items() if k not in {"ocr_records"}})
+
+
+def _render_ocr_tick_tables(detection):
+    """Inner contents of the 'OCR tick tables' expander. Returns True if user re-calibrated."""
+    st.caption(
+        "`pixel_position` is the geometry-based tick position. "
+        "Correct `value`, uncheck bad rows, then re-calibrate."
+    )
+    display_cols = ["include", "axis", "raw_text", "cleaned_text", "value", "pixel_position",
+                    "ocr_confidence", "pair_distance_px", "parse_status", "status", "flag"]
+    x_df = pd.DataFrame(detection.get("x_tick_table", []) or [])
+    y_df = pd.DataFrame(detection.get("y_tick_table", []) or [])
+    if len(x_df):
+        x_df = x_df[[c for c in display_cols if c in x_df.columns]]
+    if len(y_df):
+        y_df = y_df[[c for c in display_cols if c in y_df.columns]]
+    left_col, right_col = st.columns(2)
+    with left_col:
+        st.markdown("**X tick labels**")
+        edited_x = st.data_editor(
+            x_df, key="ocr_x_tick_editor",
+            use_container_width=True, hide_index=True,
+            disabled=["axis", "raw_text", "cleaned_text", "ocr_confidence",
+                      "pair_distance_px", "parse_status", "status", "flag"],
+        )
+    with right_col:
+        st.markdown("**Y tick labels**")
+        edited_y = st.data_editor(
+            y_df, key="ocr_y_tick_editor",
+            use_container_width=True, hide_index=True,
+            disabled=["axis", "raw_text", "cleaned_text", "ocr_confidence",
+                      "pair_distance_px", "parse_status", "status", "flag"],
+        )
+    if st.button("Re-calibrate from edits",
+                 type="primary", use_container_width=True,
+                 key="recalibrate_from_edits"):
+        updated = update_detection_from_tick_tables(detection, edited_x, edited_y)
+        st.session_state.auto_axis_detection = updated
+        _set_manual_fields_from_detection(updated)
+        st.toast("Calibration updated from edited tick tables.", icon="✅")
+        st.rerun()
+
+
+def _render_manual_override(img_bgr):
+    """Inner contents of the 'Manual override' expander."""
+    h, w = img_bgr.shape[:2]
+    st.caption(
+        "Enter pixel and data coordinates for three calibration anchors. "
+        "P1 + P2 anchor the X axis; P3 anchors the Y axis. "
+        "Click **Load detected values** to pre-fill from the latest detection."
+    )
+    pc1, pc2, pc3 = st.columns(3)
+    with pc1:
+        st.markdown("**P1 — X-axis left**")
+        st.number_input("Pixel X", key="p1_px_x", step=1.0,
+                        min_value=0.0, max_value=float(w))
+        st.number_input("Pixel Y", key="p1_px_y", step=1.0,
+                        min_value=0.0, max_value=float(h))
+        st.number_input("Data X",  key="p1_data_x")
+        st.number_input("Data Y (baseline)", key="p1_data_y",
+                        help="Data Y at the X-axis baseline — anchors the Y scale.")
+    with pc2:
+        st.markdown("**P2 — X-axis right**")
+        st.number_input("Pixel X", key="p2_px_x", step=1.0,
+                        min_value=0.0, max_value=float(w))
+        st.number_input("Pixel Y", key="p2_px_y", step=1.0,
+                        min_value=0.0, max_value=float(h))
+        st.number_input("Data X",  key="p2_data_x")
+    with pc3:
+        st.markdown("**P3 — Y-axis top**")
+        st.number_input("Pixel X", key="p3_px_x", step=1.0,
+                        min_value=0.0, max_value=float(w))
+        st.number_input("Pixel Y", key="p3_px_y", step=1.0,
+                        min_value=0.0, max_value=float(h))
+        st.number_input("Data Y", key="p3_data_y")
+
+    # Live degeneracy hints — surfaced before the user clicks Apply.
+    if abs(st.session_state.get("p1_px_x", 0.0) -
+           st.session_state.get("p2_px_x", 0.0)) < 1e-9 and not _manual_fields_are_empty():
+        st.warning("P1 and P2 share the same pixel X — calibration would fail.")
+    if abs(st.session_state.get("p1_px_y", 0.0) -
+           st.session_state.get("p3_px_y", 0.0)) < 1e-9 and not _manual_fields_are_empty():
+        st.warning("P1 and P3 share the same pixel Y — Y-axis calibration would fail.")
+
+    st.button(
+        "Load detected values",
+        on_click=_callback_copy_detected_values,
+        disabled=not _auto_detection_available(),
+        use_container_width=True,
+        help="Pre-fill the fields above from the latest auto-detection.",
+    )
+    res = st.session_state.get("copy_detected_result")
+    if res == "ok":
+        st.success("Fields loaded from detection.")
+        st.session_state.copy_detected_result = None
+    elif res and res.startswith("error:"):
+        st.error(res[len("error:"):])
+        st.session_state.copy_detected_result = None
+
+
 def _render_calibration_tab(img_bgr):
-    """Combined calibration tab: detection settings, band preview, diagnostics, and manual entry."""
+    """Calibrate tab: one button at the top to run detection, one at the bottom to apply.
+
+    Everything in between is grouped into collapsible expanders so the workflow
+    stays visible without scrolling through a wall of controls.
+    """
     image_hash = st.session_state.get("image_hash")
     if image_hash is None:
         st.info("Upload an image to begin.")
         return
 
-    # ── Settings row ──────────────────────────────────────────────────────────
-    s1, s2, s3, s4 = st.columns([1, 1, 1, 1])
-    with s1:
-        st.toggle("OCR-assisted detection", key="use_ocr_axis")
-        st.toggle("Mask all detected text", key="ocr_mask_all_text")
-    with s2:
-        st.toggle("Show OCR debug overlay", key="show_ocr_debug_overlay")
-        st.toggle(
-            "Student-t robust regression", key="use_robust_regression",
-            help="Heavy-tailed MLE downweights outlier label-tick pairs. Falls back to OLS for 2-point calibrations.",
-        )
-    with s3:
-        st.slider("Min OCR confidence", 0.0, 1.0, key="ocr_min_confidence", step=0.05)
-    with s4:
-        st.button(
-            "Run Auto Axis Detection",
-            key="auto_detect_tab",
-            on_click=_run_auto_axis_detection,
-            type="primary",
-            use_container_width=True,
-            help="Runs EasyOCR text masking and tick-label parsing when OCR is enabled.",
-        )
-        if _auto_detection_available():
-            det = st.session_state.auto_axis_detection
-            conf_top = float(det.get("confidence", 0.0))
-            st.caption(f"Last result: **{det.get('mode', 'unknown')}** — confidence {conf_top:.2f}")
+    # Use the series-masked image for display and calibration if one has been built.
+    cal_img_bgr = st.session_state.get("cal_masked_img_bgr")
+    if cal_img_bgr is None:
+        cal_img_bgr = img_bgr
 
-    st.divider()
+    detection_available = _auto_detection_available()
 
-    # ── Phase A + frame detection (cached per image) ──────────────────────────
-    preview = None
+    # ── 1. Detection settings (collapsed by default) ──────────────────────────
+    with st.expander("Detection settings", expanded=not detection_available):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.toggle("OCR-assisted detection", key="use_ocr_axis")
+            st.toggle("Mask all detected text", key="ocr_mask_all_text")
+        with c2:
+            st.toggle("Show OCR debug overlay", key="show_ocr_debug_overlay")
+        st.slider("Min OCR confidence", 0.0, 1.0,
+                  key="ocr_min_confidence", step=0.05)
+
+    # ── 2. Primary action: Run Detection ──────────────────────────────────────
+    if st.session_state.get("df") is None:
+        st.caption("Upload a CSV in the sidebar to view the calibrated overlay after detection.")
+
+    if cal_img_bgr is not img_bgr:
+        n_hidden = sum(
+            1 for k, v in st.session_state.items()
+            if k.startswith("vis_") and not v
+        )
+        st.info(f"Using series-masked image ({n_hidden} series hidden). "
+                "Toggle visibility in the sidebar to update.")
+
+    run_clicked = st.button(
+        "Run Detection",
+        key="run_detection_primary",
+        type="primary",
+        use_container_width=True,
+        help=(
+            "Runs the full pipeline: EasyOCR text discovery, frame detection, "
+            "tick parsing, grid-fit, and per-axis calibration regression."
+        ),
+    )
+    if detection_available:
+        det = st.session_state.auto_axis_detection
+        st.caption(
+            f"Last run: **{det.get('mode', 'unknown')}** — "
+            f"confidence {float(det.get('confidence', 0.0)):.2f}"
+        )
+
+    # ── 3. Frame preview + band controls (always visible) ─────────────────────
     try:
         with st.spinner("Detecting plot frame..."):
             preview, _was_cached = _get_or_compute_frame_preview(img_bgr, image_hash)
@@ -976,21 +1222,18 @@ def _render_calibration_tab(img_bgr):
         st.error("Could not detect a plot frame in this image.")
         for w in preview.warnings:
             st.warning(w)
-        st.info("Without a detected frame, label bands cannot be positioned. Try running detection above.")
+        st.info("Without a detected frame, label bands cannot be positioned.")
         return
 
     default_cfg = CalibrationConfig()
     overrides_key = _band_overrides_key(image_hash)
     saved = st.session_state.get(overrides_key, {})
-
     init_y_left  = int(saved.get("y_band_extra_px",            default_cfg.y_band_extra_px))
     init_y_vert  = int(saved.get("y_band_extra_vertical_px",   default_cfg.y_band_extra_vertical_px))
     init_x_below = int(saved.get("x_band_extra_px",            default_cfg.x_band_extra_px))
     init_x_horiz = int(saved.get("x_band_extra_horizontal_px", default_cfg.x_band_extra_horizontal_px))
-
     keys = _slider_keys(image_hash)
 
-    # ── Two-column layout: image (left, wider) | band controls (right) ────────
     img_col, ctrl_col = st.columns([2, 1])
 
     with ctrl_col:
@@ -1022,20 +1265,13 @@ def _render_calibration_tab(img_bgr):
             help="Padding left/right of the bbox for the x-band.",
             key=keys["x_horiz"],
         )
-        st.markdown("---")
-        col_reset, col_run = st.columns(2)
-        with col_reset:
-            if st.button("⟳ Defaults", use_container_width=True, key=f"band_reset:{image_hash}"):
-                st.session_state.pop(overrides_key, None)
-                for k in keys.values():
-                    st.session_state.pop(k, None)
-                st.rerun()
-        with col_run:
-            run_clicked = st.button(
-                "▶ Run calibration",
-                type="primary", use_container_width=True,
-                key=f"band_run:{image_hash}",
-            )
+        if st.button("↺ Reset bands to defaults",
+                     use_container_width=True,
+                     key=f"band_reset:{image_hash}"):
+            st.session_state.pop(overrides_key, None)
+            for k in keys.values():
+                st.session_state.pop(k, None)
+            st.rerun()
         with st.expander("Preview diagnostics", expanded=False):
             st.write({
                 "frame_preview_run_count": st.session_state.get("frame_preview_run_count", 0),
@@ -1045,44 +1281,43 @@ def _render_calibration_tab(img_bgr):
             })
 
     with img_col:
-        # Show calibration diagnostic overlay when detection is available;
-        # fall back to the lightweight band-window preview otherwise.
-        if _auto_detection_available():
+        if detection_available:
             cal_result = st.session_state.get("auto_axis_result")
             show_debug = st.session_state.get("show_ocr_debug_overlay", True)
             if cal_result is not None:
-                # Use the CalibrationResult directly so render_overlay reads the
-                # actual config (band sizes) that was used — not legacy-dict defaults.
                 overlay_img = render_overlay(
-                    img_bgr, cal_result,
+                    cal_img_bgr, cal_result,
                     show_band_windows=show_debug,
                     show_grid_rejected=True,
                 )
             else:
-                # Fallback for cached detections that pre-date auto_axis_result.
                 det_img = st.session_state.auto_axis_detection
                 if show_debug and det_img.get("ocr_enabled"):
-                    overlay_img = build_ocr_debug_overlay(img_bgr, det_img,
-                                                          show_mask=True, show_pairing=True)
+                    overlay_img = build_ocr_debug_overlay(
+                        cal_img_bgr, det_img, show_mask=True, show_pairing=True,
+                    )
                 else:
-                    overlay_img = build_diagnostic_overlay(img_bgr, det_img)
-            img_caption = "Calibration diagnostic — axes, ticks, pairings, and P1/P2/P3 anchors (magenta)."
+                    overlay_img = build_diagnostic_overlay(cal_img_bgr, det_img)
+            img_caption = "Calibration diagnostic — axes, ticks, pairings, and P1/P2/P3 (magenta)."
         else:
-            y_band = _y_label_band(preview.bbox, extra_left=int(y_extra_left), extra_vertical=int(y_extra_vert))
-            x_band = _x_label_band(preview.bbox, extra_below=int(x_extra_below), extra_horizontal=int(x_extra_horiz))
+            y_band = _y_label_band(preview.bbox,
+                                   extra_left=int(y_extra_left),
+                                   extra_vertical=int(y_extra_vert))
+            x_band = _x_label_band(preview.bbox,
+                                   extra_below=int(x_extra_below),
+                                   extra_horizontal=int(x_extra_horiz))
             overlay_img = render_band_preview(
-                img_bgr, preview.bbox, y_band, x_band,
+                cal_img_bgr, preview.bbox, y_band, x_band,
                 phase_a_records=preview.phase_a_records,
             )
             img_caption = (
                 f"Band preview — bbox ({preview.bbox.left}, {preview.bbox.top})→"
                 f"({preview.bbox.right}, {preview.bbox.bottom}). "
-                f"Y-band x: {y_band[0]}–{y_band[2]}, X-band y: {x_band[1]}–{x_band[3]}. "
-                "Run calibration to see full diagnostic."
+                "Click Run Detection above to see the full diagnostic."
             )
         st.image(overlay_img, caption=img_caption, use_container_width=True)
 
-    # Persist slider values per-image.
+    # Persist slider values per-image so subsequent renders + Run Detection use them.
     st.session_state[overrides_key] = {
         "y_band_extra_px":            int(y_extra_left),
         "y_band_extra_vertical_px":   int(y_extra_vert),
@@ -1091,7 +1326,8 @@ def _render_calibration_tab(img_bgr):
     }
 
     if preview.warnings:
-        with st.expander(f"Frame-detection warnings ({len(preview.warnings)})", expanded=False):
+        with st.expander(f"Frame-detection warnings ({len(preview.warnings)})",
+                         expanded=False):
             for w in preview.warnings:
                 st.warning(w)
 
@@ -1099,13 +1335,13 @@ def _render_calibration_tab(img_bgr):
         st.warning(
             "⚠️ The last calibration was refused because all paired y-labels read as the "
             "same value — the y-band crop likely bisected multi-digit labels. Increase "
-            "**Y-label band → Extra left** until the band fully covers the longest label, "
-            "then click **▶ Run calibration** again."
+            "**Y-label band → Extra left** until the band covers the longest label, "
+            "then click **Run Detection** again."
         )
 
-    # ── Run calibration handler ───────────────────────────────────────────────
+    # ── 4. Run Detection handler (uses current band slider values) ────────────
     if run_clicked:
-        with st.spinner("Running full calibration with custom bands..."):
+        with st.spinner("Running calibration pipeline..."):
             override_cfg = CalibrationConfig(
                 y_band_extra_px=int(y_extra_left),
                 y_band_extra_vertical_px=int(y_extra_vert),
@@ -1113,202 +1349,72 @@ def _render_calibration_tab(img_bgr):
                 x_band_extra_horizontal_px=int(x_extra_horiz),
                 use_gpu=False,
                 min_ocr_confidence=float(st.session_state.get("ocr_min_confidence", 0.20)),
-                use_robust_regression=bool(st.session_state.get("use_robust_regression", True)),
             )
             try:
-                result = run_calibration(img_bgr, config=override_cfg)
+                if not bool(st.session_state.get("use_ocr_axis", True)):
+                    detection = auto_detect_axes_and_ticks(cal_img_bgr)
+                    detection["ocr_enabled"] = False
+                    st.session_state.auto_axis_detection = detection
+                    st.session_state.auto_axis_result = None
+                else:
+                    result = run_calibration(cal_img_bgr, config=override_cfg)
+                    st.session_state.auto_axis_detection = result.to_legacy_dict()
+                    st.session_state.auto_axis_result = result
+                    if result.success:
+                        st.toast(f"Detection succeeded — confidence {result.confidence:.2f}",
+                                 icon="✅")
+                    for w in result.warnings:
+                        st.warning(w)
             except Exception as e:
-                st.error(f"Calibration failed: {type(e).__name__}: {e}")
+                st.error(f"Detection failed: {type(e).__name__}: {e}")
                 return
-            st.session_state.auto_axis_detection = result.to_legacy_dict()
-            st.session_state.auto_axis_result = result
             st.session_state.auto_axis_image_hash = image_hash
-            if result.success:
-                st.success(f"Calibration succeeded — confidence {result.confidence:.2f}.")
-            else:
-                st.error("Calibration did not succeed. See warnings and try adjusting the bands.")
-            for w in result.warnings:
-                st.warning(w)
+            st.rerun()
 
-    st.divider()
-
-    # ── Detection results ─────────────────────────────────────────────────────
-    if _auto_detection_available():
-        detection = st.session_state.auto_axis_detection
-        conf = float(detection.get("confidence", 0.0))
-        st.metric("Detection confidence", f"{conf:.2f}", help=f"Mode: {detection.get('mode', 'unknown')}")
-
-        if detection.get("warnings"):
-            for w in detection.get("warnings", []):
-                st.warning(w)
+    # ── 5. Detection results expander (auto-expanded after first run) ─────────
+    detection = st.session_state.get("auto_axis_detection") if _auto_detection_available() else None
+    if detection is not None:
+        with st.expander("Detection results", expanded=True):
+            _render_detection_results(detection)
 
         if detection.get("ocr_enabled"):
-            st.markdown("#### OCR tick tables")
-            st.caption(
-                "`pixel_position` is the geometry-based tick position. "
-                "Correct `value`, uncheck bad rows, then click Update."
-            )
-            display_cols = ["include", "axis", "raw_text", "cleaned_text", "value", "pixel_position",
-                            "ocr_confidence", "pair_distance_px", "parse_status", "status", "flag"]
-            x_df = pd.DataFrame(detection.get("x_tick_table", []) or [])
-            y_df = pd.DataFrame(detection.get("y_tick_table", []) or [])
-            if len(x_df): x_df = x_df[[c for c in display_cols if c in x_df.columns]]
-            if len(y_df): y_df = y_df[[c for c in display_cols if c in y_df.columns]]
-            left_col, right_col = st.columns(2)
-            with left_col:
-                st.markdown("**X tick labels**")
-                edited_x = st.data_editor(
-                    x_df, key="ocr_x_tick_editor", use_container_width=True, hide_index=True,
-                    disabled=["axis", "raw_text", "cleaned_text", "ocr_confidence",
-                              "pair_distance_px", "parse_status", "status", "flag"],
-                )
-            with right_col:
-                st.markdown("**Y tick labels**")
-                edited_y = st.data_editor(
-                    y_df, key="ocr_y_tick_editor", use_container_width=True, hide_index=True,
-                    disabled=["axis", "raw_text", "cleaned_text", "ocr_confidence",
-                              "pair_distance_px", "parse_status", "status", "flag"],
-                )
-            if st.button("Update calibration from edited tick tables", type="primary", use_container_width=True):
-                updated = update_detection_from_tick_tables(detection, edited_x, edited_y)
-                st.session_state.auto_axis_detection = updated
-                _set_manual_fields_from_detection(updated)
-                st.success("Calibration updated from edited tick tables.")
-                st.rerun()
-        else:
-            st.info("OCR was disabled or unavailable — geometry-only detection.")
+            with st.expander("OCR tick tables", expanded=False):
+                _render_ocr_tick_tables(detection)
 
-        st.markdown("#### Detected calibration points")
-        pts = []
-        for label in ["p1", "p2", "p3"]:
-            p = detection.get(label)
-            if p:
-                row = {"point": label.upper(), "pixel_x": float(p[0]), "pixel_y": float(p[1])}
-                if label == "p1":
-                    row["data_x"] = detection.get("p1_data_x", st.session_state.get("p1_data_x", 0.0))
-                    row["data_y"] = detection.get("p1_data_y", st.session_state.get("p1_data_y", 0.0))
-                elif label == "p2":
-                    row["data_x"] = detection.get("p2_data_x", st.session_state.get("p2_data_x", 1.0))
-                    row["data_y"] = detection.get("p1_data_y", st.session_state.get("p1_data_y", 0.0))
-                else:
-                    row["data_x"] = detection.get("p3_data_x", 0.0)
-                    row["data_y"] = detection.get("p3_data_y", st.session_state.get("p3_data_y", 1.0))
-                pts.append(row)
-        if pts:
-            st.dataframe(pd.DataFrame(pts), use_container_width=True, hide_index=True)
+    # ── 6. Manual override expander (collapsed by default) ────────────────────
+    with st.expander("Manual override", expanded=False):
+        _render_manual_override(img_bgr)
 
-        x_cal = detection.get("x_calibration")
-        y_cal = detection.get("y_calibration")
-        x_grid = detection.get("x_grid_fit")
-        y_grid = detection.get("y_grid_fit")
-        if x_cal or y_cal or x_grid or y_grid:
-            st.markdown("#### Calibration diagnostics")
-            diag_rows = []
-            for axis_name, cal_d, grid_d in [("X", x_cal, x_grid), ("Y", y_cal, y_grid)]:
-                if not cal_d:
-                    continue
-                diag_rows.append({
-                    "axis": axis_name,
-                    "method": cal_d.get("method", ""),
-                    "n_points": cal_d.get("n_points", 0),
-                    "scale": cal_d.get("scale"),
-                    "offset": cal_d.get("offset"),
-                    "rmse_data": cal_d.get("rmse_data"),
-                    "rmse_px": cal_d.get("rmse_px"),
-                    "slope_SE": cal_d.get("slope_se"),
-                    "grid_spacing_px": grid_d.get("spacing") if grid_d else None,
-                    "grid_kept": len(grid_d.get("fitted_positions", [])) if grid_d else None,
-                    "grid_rejected": len(grid_d.get("rejected_positions", [])) if grid_d else None,
-                })
-            if diag_rows:
-                st.dataframe(pd.DataFrame(diag_rows), use_container_width=True, hide_index=True)
-
-        with st.expander("Raw detection diagnostics", expanded=False):
-            st.json({k: v for k, v in detection.items() if k not in {"ocr_records"}})
-
-        st.divider()
-
-    # ── Manual calibration points ─────────────────────────────────────────────
-    st.markdown("#### Calibration Points")
-    st.caption(
-        "Pre-filled by **Apply detected calibration** or **Copy detected → fields**. "
-        "Edit manually if needed, then click **Apply Calibration**."
+    # ── 7. Primary action: Apply Calibration ──────────────────────────────────
+    st.button(
+        "Apply Calibration",
+        key="apply_calibration_primary",
+        on_click=_callback_apply_calibration,
+        type="primary",
+        use_container_width=True,
+        help=(
+            "Applies the manual override values if set, otherwise applies the "
+            "latest detection result. Enables the Overlay and Compare tabs."
+        ),
     )
-    pc1, pc2, pc3 = st.columns(3)
-    with pc1:
-        st.markdown("**P1 — X-axis left**")
-        p1_px_x  = st.number_input("Pixel X", key="p1_px_x",  value=0.0, step=1.0)
-        p1_px_y  = st.number_input("Pixel Y", key="p1_px_y",  value=0.0, step=1.0)
-        p1_data_x = st.number_input("Data X",  key="p1_data_x", value=0.0)
-        p1_data_y = st.number_input(
-            "Data Y (baseline)", key="p1_data_y", value=0.0,
-            help="Data Y at the X-axis baseline — anchors the Y scale.",
-        )
-    with pc2:
-        st.markdown("**P2 — X-axis right**")
-        p2_px_x  = st.number_input("Pixel X", key="p2_px_x",  value=0.0, step=1.0)
-        p2_px_y  = st.number_input("Pixel Y", key="p2_px_y",  value=0.0, step=1.0)
-        p2_data_x = st.number_input("Data X",  key="p2_data_x", value=1.0)
-        st.number_input("Data Y", key="p2_data_y", value=0.0, disabled=True,
-                        help="Disabled for X-axis points.")
-    with pc3:
-        st.markdown("**P3 — Y-axis top**")
-        p3_px_x  = st.number_input("Pixel X", key="p3_px_x",  value=0.0, step=1.0)
-        p3_px_y  = st.number_input("Pixel Y", key="p3_px_y",  value=0.0, step=1.0)
-        st.number_input("Data X", key="p3_data_x", value=0.0, disabled=True,
-                        help="Disabled for Y-axis points.")
-        p3_data_y = st.number_input("Data Y",  key="p3_data_y", value=1.0)
 
-    ba1, ba2, ba3 = st.columns(3)
-    with ba1:
-        if st.button("Apply Calibration", type="primary", use_container_width=True):
-            cal = compute_calibration(
-                p1_px_x, p1_px_y, p2_px_x, p2_px_y, p3_px_x, p3_px_y,
-                p1_data_x, p2_data_x, p3_data_y, p1_data_y,
-            )
-            if cal is None:
-                st.error("Invalid points — P1 and P2 must have different pixel X coordinates.")
-            else:
-                st.session_state.calibration = cal
-                st.rerun()
-    with ba2:
-        st.button(
-            "Copy detected → fields",
-            on_click=_callback_copy_detected_values,
-            use_container_width=True,
-            help="Pre-fill P1/P2/P3 from the last auto-detection result.",
-        )
-        res = st.session_state.get("copy_detected_result")
-        if res == "ok":
-            st.success("Fields updated from detection.")
-            st.session_state.copy_detected_result = None
-        elif res and res.startswith("error:"):
-            st.error(res[len("error:"):])
-            st.session_state.copy_detected_result = None
-    with ba3:
-        st.button(
-            "Apply detected calibration",
-            on_click=_callback_apply_detected_calibration,
-            use_container_width=True,
-            help="Apply calibration directly from the last auto-detection result.",
-        )
-        res = st.session_state.get("apply_calibration_result")
-        if res == "ok":
-            st.success("Calibration applied.")
-            st.session_state.apply_calibration_result = None
-        elif res and res.startswith("error:"):
-            st.error(res[len("error:"):])
-            st.session_state.apply_calibration_result = None
+    res = st.session_state.get("apply_calibration_result")
+    if res == "ok":
+        st.success("Calibration applied.")
+        st.session_state.apply_calibration_result = None
+    elif res and res.startswith("error:"):
+        st.error(res[len("error:"):])
+        st.session_state.apply_calibration_result = None
 
     if st.session_state.calibration.get("applied"):
         cal_s = st.session_state.calibration
-        st.success(
-            f"✓ Calibration applied — "
+        st.caption(
+            f"✓ Active calibration — "
             f"X: {cal_s.get('x_scale', 0):.5f} data/px  |  "
             f"Y: {cal_s.get('y_scale', 0):.5f} data/px"
         )
     else:
-        st.info("✗ Not calibrated — apply calibration to enable the Extracted Overlay tab.")
+        st.caption("✗ Not yet calibrated — apply to enable the Overlay and Compare tabs.")
 
 
 def _render_mask_view(img_rgb, img_bgr, img_hash, df, series_states, cal,
@@ -1336,7 +1442,7 @@ def _render_overlay_view(img_rgb, df, series_states, cal,
         st.info("Upload a CSV to see the data overlay.")
         return
     if not cal.get("applied"):
-        st.warning("Apply axis calibration in the **Calibration** tab to enable the overlay.")
+        st.warning("Apply axis calibration in the **Calibrate** tab to enable the overlay.")
         fig = px.imshow(img_rgb, binary_string=True)
         fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=container_height)
         st.plotly_chart(
@@ -1365,34 +1471,39 @@ def render_main():
     series_states = st.session_state.series_states
     cal = st.session_state.calibration
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Image & Masks",
-        "Extracted Overlay",
-        "Calibration",
-        "Side by Side",
+    mask_tab, calib_tab, overlay_tab, compare_tab = st.tabs([
+        "Masks",
+        "Calibrate",
+        "Overlay",
+        "Compare",
     ])
 
-    with tab1:
+    with mask_tab:
         _render_mask_view(img_rgb, img_bgr, img_hash, df, series_states, cal,
-                          key_suffix="_tab1")
+                          key_suffix="_masks")
 
-    with tab2:
-        _render_overlay_view(img_rgb, df, series_states, cal,
-                             key_suffix="_tab2")
-
-    with tab3:
+    with calib_tab:
         _render_calibration_tab(img_bgr)
 
-    with tab4:
+    cal_masked = st.session_state.get("cal_masked_img_bgr")
+    overlay_bg_rgb = (
+        cv2.cvtColor(cal_masked, cv2.COLOR_BGR2RGB) if cal_masked is not None else img_rgb
+    )
+
+    with overlay_tab:
+        _render_overlay_view(overlay_bg_rgb, df, series_states, cal,
+                             key_suffix="_overlay")
+
+    with compare_tab:
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Color Masks**")
             _render_mask_view(img_rgb, img_bgr, img_hash, df, series_states, cal,
-                              container_height=500, key_suffix="_tab4_left")
+                              container_height=500, key_suffix="_cmp_left")
         with col2:
             st.markdown("**Extracted Overlay**")
-            _render_overlay_view(img_rgb, df, series_states, cal,
-                                 container_height=500, key_suffix="_tab4_right")
+            _render_overlay_view(overlay_bg_rgb, df, series_states, cal,
+                                 container_height=500, key_suffix="_cmp_right")
 
 
 # ---------------------------------------------------------------------------
