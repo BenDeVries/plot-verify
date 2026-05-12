@@ -232,7 +232,7 @@ def detect_x_tick_positions(
     bbox: AxisFrame,
 ) -> List[float]:
     h, w = dark.shape[:2]
-    y0 = max(0, bbox.bottom - 3)
+    y0 = max(0, bbox.bottom)
     y1 = min(h, bbox.bottom + max(10, int(0.025 * h)))
     x0 = max(0, bbox.left)
     x1 = min(w, bbox.right + 1)
@@ -253,7 +253,7 @@ def detect_y_tick_positions(
 ) -> List[float]:
     h, w = dark.shape[:2]
     x0 = max(0, bbox.left - max(10, int(0.025 * w)))
-    x1 = min(w, bbox.left + 4)
+    x1 = min(w, bbox.left + 1)
     y0 = max(0, bbox.top)
     y1 = min(h, bbox.bottom + 1)
     band = dark[y0:y1, x0:x1]

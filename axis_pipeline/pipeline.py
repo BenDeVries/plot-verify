@@ -263,8 +263,18 @@ def run_calibration(
     diagnostics["y_grid_rejected"] = len(y_grid.rejected_positions)
 
     # ── Pairing ───────────────────────────────────────────────────
-    x_label_records = pair_mod.filter_x_axis_labels(combined_records, bbox)
-    y_label_records = pair_mod.filter_y_axis_labels(combined_records, bbox)
+    x_horiz = cfg.x_band_extra_horizontal_px
+    y_vert = cfg.y_band_extra_vertical_px
+    x_label_records = pair_mod.filter_x_axis_labels(
+        combined_records, bbox,
+        x_min=bbox.left + x_horiz if x_horiz > 0 else None,
+        x_max=bbox.right - x_horiz if x_horiz > 0 else None,
+    )
+    y_label_records = pair_mod.filter_y_axis_labels(
+        combined_records, bbox,
+        y_min=bbox.top + y_vert if y_vert > 0 else None,
+        y_max=bbox.bottom - y_vert if y_vert > 0 else None,
+    )
     diagnostics["x_label_candidates"] = len(x_label_records)
     diagnostics["y_label_candidates"] = len(y_label_records)
 

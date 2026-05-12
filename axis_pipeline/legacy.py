@@ -130,15 +130,29 @@ def update_detection_from_tick_tables(
     pairs and updates the anchor points P1/P2/P3 + their data values.
     """
     out = dict(detection)
-    x_rows = pd.DataFrame(x_df).to_dict("records") if x_df is not None else out.get("x_tick_table", [])
-    y_rows = pd.DataFrame(y_df).to_dict("records") if y_df is not None else out.get("y_tick_table", [])
+
+    def _merge_edited(edited_df, orig_rows: list) -> list:
+        """Overlay edited columns onto original rows, preserving hidden fields."""
+        if edited_df is None:
+            return [dict(r) for r in orig_rows]
+        edited = pd.DataFrame(edited_df).to_dict("records")
+        result = []
+        for i, edits in enumerate(edited):
+            base = dict(orig_rows[i]) if i < len(orig_rows) else {}
+            base.update(edits)
+            result.append(base)
+        return result
+
+    x_rows = _merge_edited(x_df, out.get("x_tick_table") or [])
+    y_rows = _merge_edited(y_df, out.get("y_tick_table") or [])
 
     for rows in (x_rows, y_rows):
         for r in rows:
             r["include"] = bool(r.get("include", True))
             for k in ["value", "pixel_position", "fixed_axis_pixel", "ocr_confidence", "pair_distance_px"]:
+                v = r.get(k)
                 try:
-                    r[k] = float(r[k]) if r[k] is not None else None
+                    r[k] = float(v) if v is not None else None
                 except (TypeError, ValueError):
                     r[k] = None if k == "value" else float("nan")
 

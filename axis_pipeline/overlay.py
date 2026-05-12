@@ -38,10 +38,12 @@ def render_overlay(
     if show_band_windows:
         layer = overlay.copy()
         if result.config and result.config.enable_phase_b_y_band:
-            yb = y_label_band(bbox, extra_left=result.config.y_band_extra_px)
+            y_extra = int(result.diagnostics.get("y_band_extra_used", result.config.y_band_extra_px))
+            yb = y_label_band(bbox, extra_left=y_extra)
             cv2.rectangle(layer, (yb[0], yb[1]), (yb[2], yb[3]), (220, 240, 200), -1)
         if result.config and result.config.enable_phase_c_x_band:
-            xb = x_label_band(bbox, extra_below=result.config.x_band_extra_px)
+            x_extra = int(result.diagnostics.get("x_band_extra_used", result.config.x_band_extra_px))
+            xb = x_label_band(bbox, extra_below=x_extra)
             cv2.rectangle(layer, (xb[0], xb[1]), (xb[2], xb[3]), (200, 220, 240), -1)
         overlay = cv2.addWeighted(layer, 0.20, overlay, 0.80, 0)
 

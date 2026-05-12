@@ -115,9 +115,9 @@ def hex_complement(hex_color: str) -> str:
     if val < 0.25:
         r, g, b = colorsys.hsv_to_rgb(rng.random(), rng.uniform(0.25, 0.55), rng.uniform(0.9, 1.0))
         return "#{:02x}{:02x}{:02x}".format(
-            int(round(cr * 255)),
-            int(round(cg * 255)),
-            int(round(cb * 255)),
+            int(round(r * 255)),
+            int(round(g * 255)),
+            int(round(b * 255)),
         )
     comp_hue = (hue + 0.5) % 1.0
     cr, cg, cb = colorsys.hsv_to_rgb(comp_hue, sat, val)
@@ -1399,6 +1399,7 @@ def _render_calibration_tab(img_bgr):
                 st.error(f"Detection failed: {type(e).__name__}: {e}")
                 return
             st.session_state.auto_axis_image_hash = image_hash
+            _callback_apply_calibration()
             st.rerun()
 
     # ── 5. Detection results expander (auto-expanded after first run) ─────────

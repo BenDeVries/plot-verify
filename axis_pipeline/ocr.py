@@ -35,11 +35,45 @@ from .types import OCRPhase, OCRRecord
 
 _NUMERIC_ALLOWLIST = "0123456789.+-eE^×x"
 
-_RE_UNICODE_SUPERSCRIPTS = str.maketrans({
+# Superscript digits and sign used on log-scale tick labels (e.g. "10³", "10⁻³").
+_SUPERSCRIPT_DIGITS: Dict[str, str] = {
     "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
     "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
-    "⁻": "-", "−": "-", "–": "-", "—": "-",
-})
+}
+_SUPERSCRIPT_MINUS = "⁻"
+_SUPERSCRIPT_ALL = frozenset(_SUPERSCRIPT_DIGITS) | {_SUPERSCRIPT_MINUS}
+
+# Dash-like Unicode chars that should all normalise to ASCII hyphen-minus.
+_UNICODE_DASHES = str.maketrans({"−": "-", "–": "-", "—": "-"})
+
+
+def _expand_superscripts(s: str) -> str:
+    """Replace runs of Unicode superscript chars with '^' + ASCII equivalent.
+
+    "10³"    → "10^3"
+    "10⁻³"   → "10^-3"
+    "10⁻¹⁰"  → "10^-10"
+
+    Inserting the literal '^' means the log-10 regex can require an explicit
+    caret instead of making it optional — which was causing "1000" to parse as
+    10^(00) = 1.
+    """
+    out: list = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c in _SUPERSCRIPT_ALL:
+            out.append("^")
+            while i < len(s) and s[i] in _SUPERSCRIPT_ALL:
+                if s[i] == _SUPERSCRIPT_MINUS:
+                    out.append("-")
+                else:
+                    out.append(_SUPERSCRIPT_DIGITS[s[i]])
+                i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
 
 
 # ----------------------------------------------------------------------
@@ -50,7 +84,8 @@ def normalize_text(text: Optional[str]) -> str:
     if text is None:
         return ""
     s = str(text).strip()
-    s = s.translate(_RE_UNICODE_SUPERSCRIPTS)
+    s = _expand_superscripts(s)       # "10³" → "10^3", "10⁻³" → "10^-3"
+    s = s.translate(_UNICODE_DASHES)  # "−" / "–" / "—" → "-"
     s = s.replace(" ", "")
     s = s.replace("，", ",").replace("．", ".")
     return s
@@ -89,7 +124,7 @@ def parse_numeric_tick(text: str) -> Tuple[Optional[float], str, str, str]:
     s = "".join(repaired)
     s = s.replace("×10", "e").replace("x10", "e").replace("X10", "e")
 
-    m = re.fullmatch(r"10\^?([+-]?\d+)", s)
+    m = re.fullmatch(r"10\^([+-]?\d+)", s)
     if m:
         exp = int(m.group(1))
         flag = "; ".join(repairs) if repairs else ""

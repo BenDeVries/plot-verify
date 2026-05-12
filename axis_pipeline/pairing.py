@@ -24,7 +24,7 @@ locally, but produces an inconsistent overall sequence).
 """
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -38,6 +38,9 @@ from .types import GridFit, OCRRecord, PairedTick
 def filter_x_axis_labels(
     records: List[OCRRecord],
     bbox,
+    *,
+    x_min: Optional[float] = None,
+    x_max: Optional[float] = None,
 ) -> List[OCRRecord]:
     """Keep records that should be considered for x-axis pairing.
 
@@ -45,6 +48,12 @@ def filter_x_axis_labels(
     on the x-axis label strip by construction). A record from `phase=y_band` is
     always rejected — it cannot belong to the x-axis. A record from `phase=full`
     falls through to the spatial filter (center within the x-axis label region).
+
+    `x_min` / `x_max` are the effective band boundaries after trimming
+    (`extra_horizontal`). When set, full-phase records outside those bounds are
+    excluded so the trimming is honoured even for labels Phase A already found.
+    Band-phase records are already geometrically within the band crop and need
+    no extra check.
     """
     out: List[OCRRecord] = []
     h_span = max(1, bbox.height)
@@ -59,6 +68,10 @@ def filter_x_axis_labels(
             continue
         # Spatial filter for full-phase records
         cx, cy = r.center
+        if x_min is not None and cx < x_min:
+            continue
+        if x_max is not None and cx > x_max:
+            continue
         if (bbox.left - 0.10 * w_span <= cx <= bbox.right + 0.10 * w_span
                 and cy >= bbox.bottom - 0.02 * h_span):
             out.append(r)
@@ -68,10 +81,14 @@ def filter_x_axis_labels(
 def filter_y_axis_labels(
     records: List[OCRRecord],
     bbox,
+    *,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
 ) -> List[OCRRecord]:
     """Keep records that should be considered for y-axis pairing.
 
-    Phase-aware: see `filter_x_axis_labels` for the symmetric logic.
+    `y_min` / `y_max` are the effective band boundaries after trimming
+    (`extra_vertical`). See `filter_x_axis_labels` for the symmetric logic.
     """
     out: List[OCRRecord] = []
     h_span = max(1, bbox.height)
@@ -84,6 +101,10 @@ def filter_y_axis_labels(
         if r.phase == "x_band":
             continue
         cx, cy = r.center
+        if y_min is not None and cy < y_min:
+            continue
+        if y_max is not None and cy > y_max:
+            continue
         if (bbox.top - 0.06 * h_span <= cy <= bbox.bottom + 0.06 * h_span
                 and cx <= bbox.left + 0.04 * w_span):
             out.append(r)
