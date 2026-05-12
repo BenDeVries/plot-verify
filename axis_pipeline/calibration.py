@@ -1,18 +1,19 @@
 """Linear axis calibration: fit data = scale * pixel + offset.
 
-OLS (ordinary least squares) is used throughout. After the initial fit,
-the residual standard error (RSE = sqrt(RSS / (n-2))) is computed; any
-point whose residual magnitude exceeds 2*RSE is removed and OLS is
-re-run on the survivors. This repeats until all residuals are within
-2*RSE or only 2 points remain. Removed points are marked `include=False`
-so the pipeline's anchor selection also excludes them.
+OLS (ordinary least squares) is used throughout. A greedy search removes one
+point at a time while rmse (data units) improves, stopping when no removal
+helps or only 3 points remain. All candidate sets visited during the search
+are collected. The 1-SE rule then selects the candidate with the most points
+whose rmse < min(rmse) + SE, where SE = sqrt(RSS/(n-2)) of the minimum-rmse
+candidate. Removed points are marked include=False so the pipeline's anchor
+selection also excludes them.
 
 We fit each axis independently. Fitting in pixel space (data ~ pixel)
 gives slope=scale, offset=data-intercept directly.
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 from scipy import stats
@@ -48,19 +49,39 @@ def _ols(pixels: np.ndarray, values: np.ndarray) -> AxisCalibration:
     )
 
 
+def _make_candidate(
+    pts: List[PairedTick],
+) -> Tuple[List[PairedTick], AxisCalibration, float]:
+    """Return (pts, cal, rse) for a set of points.
+
+    rse = sqrt(RSS / (n-2)); 0.0 when n <= 2 (no degrees of freedom).
+    """
+    pixels = np.array([t.pixel_position for t in pts], dtype=float)
+    values = np.array([t.data_value for t in pts], dtype=float)
+    cal = _ols(pixels, values)
+    rse = 0.0
+    if len(pts) > 2:
+        fitted = cal.scale * pixels + cal.offset
+        rss = float(np.sum((values - fitted) ** 2))
+        rse = float(np.sqrt(rss / (len(pts) - 2)))
+    return (list(pts), cal, rse)
+
+
 def calibrate_axis(
     paired_ticks: List[PairedTick],
 ) -> Optional[AxisCalibration]:
-    """Fit a 1-D linear OLS calibration with residual-based outlier removal.
+    """Fit a 1-D linear OLS calibration with greedy outlier removal and 1-SE selection.
 
-    Iteratively removes points whose residual magnitude exceeds 2 * RSE
-    (residual standard error = sqrt(RSS / (n-2))) and re-runs OLS until all
-    remaining residuals are within the threshold or only 2 points survive.
-    Removed points are marked include=False so the pipeline's anchor
-    selection also excludes them.
+    Greedy phase: at each step remove the point whose removal most reduces rmse
+    (data units), stopping when no removal improves rmse or only 3 points
+    remain. Each candidate set (including the initial full set) is recorded.
 
-    Returns None if fewer than 2 included points survive, or if the
-    remaining points are degenerate (all same data value or pixel position).
+    Selection phase (1-SE rule): find the candidate with minimum rmse; compute
+    its residual standard error SE = sqrt(RSS/(n-2)). Among all candidates with
+    rmse < min_rmse + SE, choose the one with the most points.
+
+    Returns None if fewer than 2 included points are available or the data are
+    degenerate (all same value or pixel position).
     """
     inc = [t for t in paired_ticks if t.include and t.data_value is not None]
     if len(inc) < 2:
@@ -72,39 +93,47 @@ def calibrate_axis(
         return None
 
     active = list(inc)
+    candidates = [_make_candidate(active)]
 
     while len(active) > 3:
         pixels = np.array([t.pixel_position for t in active], dtype=float)
         values = np.array([t.data_value for t in active], dtype=float)
+        current_rmse = candidates[-1][1].rmse_data
 
-        cal = _ols(pixels, values)
-        if cal.rmse_px <= 0.1:
-            break
-
-        # Greedy search: find the point whose removal most reduces rmse_px.
         best_idx = -1
-        best_rmse_px = cal.rmse_px
+        best_rmse = current_rmse
         for i in range(len(active)):
-            candidate_px = np.delete(pixels, i)
-            candidate_vals = np.delete(values, i)
-            if len({round(v, 9) for v in candidate_vals}) < 2:
+            cand_px = np.delete(pixels, i)
+            cand_vals = np.delete(values, i)
+            if len({round(v, 9) for v in cand_vals}) < 2:
                 continue
-            if len({round(p, 6) for p in candidate_px}) < 2:
+            if len({round(p, 6) for p in cand_px}) < 2:
                 continue
-            candidate_cal = _ols(candidate_px, candidate_vals)
-            if candidate_cal.rmse_px < best_rmse_px:
-                best_rmse_px = candidate_cal.rmse_px
+            cand_cal = _ols(cand_px, cand_vals)
+            if cand_cal.rmse_data < best_rmse:
+                best_rmse = cand_cal.rmse_data
                 best_idx = i
 
         if best_idx == -1:
-            break  # no removal improves rmse_px
+            break
 
-        active[best_idx].include = False
         active.pop(best_idx)
+        candidates.append(_make_candidate(active))
 
-    if len(active) < 2:
-        return None
+    # 1-SE rule: locate the minimum-rmse candidate and its SE
+    min_i = min(range(len(candidates)), key=lambda i: candidates[i][1].rmse_data)
+    min_rmse = candidates[min_i][1].rmse_data
+    se_at_min = candidates[min_i][2]
+    threshold = min_rmse + 3 * se_at_min
 
-    pixels = np.array([t.pixel_position for t in active], dtype=float)
-    values = np.array([t.data_value for t in active], dtype=float)
-    return _ols(pixels, values)
+    valid = [c for c in candidates if c[1].rmse_data < threshold]
+    if not valid:
+        valid = candidates
+
+    chosen_pts, chosen_cal, _ = max(valid, key=lambda c: len(c[0]))
+
+    chosen_ids = {id(t) for t in chosen_pts}
+    for t in inc:
+        t.include = id(t) in chosen_ids
+
+    return chosen_cal
