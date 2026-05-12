@@ -197,9 +197,9 @@ class CalibrationConfig:
     # don't grow horizontally past the band; this stays narrow.
     x_band_extra_px: int = 28
     # Horizontal padding for x-band (don't bleed into y-axis label area at the left).
-    x_band_extra_horizontal_px: int = 4
-    # Vertical padding for y-band (don't bleed into x-axis label area at the bottom).
-    y_band_extra_vertical_px: int = 4
+    x_band_extra_horizontal_px: int = 0
+    # Inward trim for y-band top/bottom: excludes labels at the extreme ends of the y-axis.
+    y_band_extra_vertical_px: int = 0
     # Fallback band sizes — used only if the narrow band returns 0 numeric records.
     # Wider bands risk capturing axis titles, but rescue plots where tick labels
     # sit unusually far from the axis (large fonts, multi-line label formats).

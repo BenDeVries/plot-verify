@@ -124,7 +124,7 @@ def calibrate_axis(
     min_i = min(range(len(candidates)), key=lambda i: candidates[i][1].rmse_data)
     min_rmse = candidates[min_i][1].rmse_data
     se_at_min = candidates[min_i][2]
-    threshold = min_rmse + 3 * se_at_min
+    threshold = min_rmse + se_at_min
 
     valid = [c for c in candidates if c[1].rmse_data < threshold]
     if not valid:

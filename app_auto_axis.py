@@ -42,6 +42,7 @@ from axis_pipeline import (
 
 REQUIRED_COLUMNS = ["series", "x", "y", "y_err_lower", "y_err_upper", "series_color"]
 FALLBACK_HEX = "#888888"
+rng = np.random.default_rng(12345)
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +84,7 @@ def hex_to_bgr(hex_color):
     return (b, g, r)
 
 
-def _delta_e_mask(img_bgr, hex_color, threshold=30.0):
+def _delta_e_mask(img_bgr, hex_color, threshold=10.0):
     """Return a binary mask of pixels within ``threshold`` ΔE76 of ``hex_color``.
 
     Works in CIE Lab — perceptually uniform, so equal distance = equal perceived
@@ -105,14 +106,25 @@ def _delta_e_mask(img_bgr, hex_color, threshold=30.0):
 
 
 def hex_complement(hex_color: str) -> str:
-    """Return the hue-opposite color of hex_color (hue shifted 180°, same S and V)."""
+    """Return the hue-opposite color of hex_color.
+    Extremely dark colors return a random light color instead.
+    """
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     hue, sat, val = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+    if val < 0.25:
+        r, g, b = colorsys.hsv_to_rgb(rng.random(), rng.uniform(0.25, 0.55), rng.uniform(0.9, 1.0))
+        return "#{:02x}{:02x}{:02x}".format(
+            int(round(cr * 255)),
+            int(round(cg * 255)),
+            int(round(cb * 255)),
+        )
     comp_hue = (hue + 0.5) % 1.0
     cr, cg, cb = colorsys.hsv_to_rgb(comp_hue, sat, val)
     return "#{:02x}{:02x}{:02x}".format(
-        int(round(cr * 255)), int(round(cg * 255)), int(round(cb * 255))
+        int(round(cr * 255)),
+        int(round(cg * 255)),
+        int(round(cb * 255)),
     )
 
 
@@ -312,7 +324,7 @@ def _get_series_mask(image_hash, series_name, state, df, img_bgr):
             color_hex = rows["series_color"].iloc[0]
     if state.get("use_delta_e", True) and df is not None:
         return cached_delta_e_mask(
-            image_hash, color_hex, int(state.get("delta_e", 30)), img_bgr
+            image_hash, color_hex, int(state.get("delta_e", 10)), img_bgr
         )
     return cached_mask(
         image_hash,
@@ -550,7 +562,7 @@ def _init_state():
     st.session_state.setdefault("auto_axis_result", None)
     st.session_state.setdefault("auto_axis_image_hash", None)
     st.session_state.setdefault("use_ocr_axis", True)
-    st.session_state.setdefault("ocr_mask_all_text", True)
+    st.session_state.setdefault("ocr_mask_all_text", False)
     st.session_state.setdefault("ocr_min_confidence", 0.20)
     st.session_state.setdefault("show_ocr_debug_overlay", True)
     # Calibration-preview tab state.
@@ -749,7 +761,7 @@ def _init_series_states(df):
             h, s, v = 0, 128, 128
         states[series_name] = {
             "use_delta_e": True,
-            "delta_e": 30,
+            "delta_e": 10,
             "h_min": max(0, h - 15),
             "h_max": min(179, h + 15),
             "s_min": max(0, s - 60),
@@ -867,9 +879,9 @@ def render_sidebar():
                     if state["use_delta_e"]:
                         state["delta_e"] = st.slider(
                             "ΔE threshold", 5, 80,
-                            value=int(state.get("delta_e", 30)),
+                            value=int(state.get("delta_e", 10)),
                             key=f"de_{series_name}",
-                            help="Lower = tighter match. 20–35 works for most plots.",
+                            help="Lower = tighter match. 10–20 works for most plots.",
                         )
                     else:
                         st.caption("HSV manual sliders:")
@@ -1174,10 +1186,10 @@ def _render_calibration_tab(img_bgr):
     with st.expander("Detection settings", expanded=not detection_available):
         c1, c2 = st.columns(2)
         with c1:
-            st.toggle("OCR-assisted detection", key="use_ocr_axis")
-            st.toggle("Mask all detected text", key="ocr_mask_all_text")
+            st.toggle("OCR-assisted detection", value=True, key="use_ocr_axis")
+            st.toggle("Mask all detected text", value=False, key="ocr_mask_all_text")
         with c2:
-            st.toggle("Show OCR debug overlay", key="show_ocr_debug_overlay")
+            st.toggle("Show OCR debug overlay", value=True, key="show_ocr_debug_overlay")
         st.slider("Min OCR confidence", 0.0, 1.0,
                   key="ocr_min_confidence", step=0.05)
 
@@ -1233,6 +1245,7 @@ def _render_calibration_tab(img_bgr):
     init_x_below = int(saved.get("x_band_extra_px",            default_cfg.x_band_extra_px))
     init_x_horiz = int(saved.get("x_band_extra_horizontal_px", default_cfg.x_band_extra_horizontal_px))
     keys = _slider_keys(image_hash)
+    img_h, img_w = cal_img_bgr.shape[:2]
 
     img_col, ctrl_col = st.columns([2, 1])
 
@@ -1247,8 +1260,8 @@ def _render_calibration_tab(img_bgr):
             key=keys["y_left"],
         )
         y_extra_vert = st.slider(
-            "Extra vertical pad (px)", min_value=0, max_value=30, value=init_y_vert, step=1,
-            help="Padding above/below the bbox for the y-band.",
+            "Trim top/bottom (px)", min_value=-(img_h // 10), max_value=img_h // 2, value=init_y_vert, step=1,
+            help="Trims the y-band inward from the top and bottom. Negative values expand beyond the detected axis.",
             key=keys["y_vert"],
         )
         st.markdown("**X-label band**")
@@ -1261,8 +1274,8 @@ def _render_calibration_tab(img_bgr):
             key=keys["x_below"],
         )
         x_extra_horiz = st.slider(
-            "Extra horizontal pad (px)", min_value=0, max_value=30, value=init_x_horiz, step=1,
-            help="Padding left/right of the bbox for the x-band.",
+            "Trim left/right (px)", min_value=-(img_w // 10), max_value=img_w // 2, value=init_x_horiz, step=1,
+            help="Trims the x-band inward from the left and right. Negative values expand beyond the detected axis.",
             key=keys["x_horiz"],
         )
         if st.button("↺ Reset bands to defaults",
@@ -1280,42 +1293,59 @@ def _render_calibration_tab(img_bgr):
                 "phase_a_numeric": sum(1 for r in preview.phase_a_records if r.is_numeric),
             })
 
-    with img_col:
-        if detection_available:
-            cal_result = st.session_state.get("auto_axis_result")
-            show_debug = st.session_state.get("show_ocr_debug_overlay", True)
-            if cal_result is not None:
-                overlay_img = render_overlay(
-                    cal_img_bgr, cal_result,
-                    show_band_windows=show_debug,
-                    show_grid_rejected=True,
+    if detection_available:
+        cal_result = st.session_state.get("auto_axis_result")
+        band_bbox = cal_result.bbox if cal_result is not None else preview.bbox
+    else:
+        cal_result = None
+        band_bbox = preview.bbox
+
+    y_band = _y_label_band(band_bbox,
+                           extra_left=int(y_extra_left),
+                           extra_vertical=int(y_extra_vert))
+    x_band = _x_label_band(band_bbox,
+                           extra_below=int(x_extra_below),
+                           extra_horizontal=int(x_extra_horiz))
+
+    if detection_available:
+        show_debug = st.session_state.get("show_ocr_debug_overlay", True)
+        ocr_ran = cal_result is not None or (
+            st.session_state.get("auto_axis_detection") or {}
+        ).get("ocr_enabled", False)
+        if cal_result is not None:
+            diag_rgb = render_overlay(
+                cal_img_bgr, cal_result,
+                show_band_windows=False,
+                show_grid_rejected=show_debug,
+                show_frame=False,
+            )
+        else:
+            det_img = st.session_state.auto_axis_detection
+            if show_debug and det_img.get("ocr_enabled"):
+                diag_rgb = build_ocr_debug_overlay(
+                    cal_img_bgr, det_img, show_mask=True, show_pairing=True,
                 )
             else:
-                det_img = st.session_state.auto_axis_detection
-                if show_debug and det_img.get("ocr_enabled"):
-                    overlay_img = build_ocr_debug_overlay(
-                        cal_img_bgr, det_img, show_mask=True, show_pairing=True,
-                    )
-                else:
-                    overlay_img = build_diagnostic_overlay(cal_img_bgr, det_img)
-            img_caption = "Calibration diagnostic — axes, ticks, pairings, and P1/P2/P3 (magenta)."
-        else:
-            y_band = _y_label_band(preview.bbox,
-                                   extra_left=int(y_extra_left),
-                                   extra_vertical=int(y_extra_vert))
-            x_band = _x_label_band(preview.bbox,
-                                   extra_below=int(x_extra_below),
-                                   extra_horizontal=int(x_extra_horiz))
-            overlay_img = render_band_preview(
-                cal_img_bgr, preview.bbox, y_band, x_band,
-                phase_a_records=preview.phase_a_records,
-            )
-            img_caption = (
-                f"Band preview — bbox ({preview.bbox.left}, {preview.bbox.top})→"
-                f"({preview.bbox.right}, {preview.bbox.bottom}). "
-                "Click Run Detection above to see the full diagnostic."
-            )
-        st.image(overlay_img, caption=img_caption, use_container_width=True)
+                diag_rgb = build_diagnostic_overlay(cal_img_bgr, det_img)
+        base_bgr = cv2.cvtColor(diag_rgb, cv2.COLOR_RGB2BGR)
+        img_caption = "Calibration diagnostic with label bands overlaid."
+    else:
+        ocr_ran = False
+        base_bgr = cal_img_bgr
+        img_caption = (
+            f"Band preview — bbox ({preview.bbox.left}, {preview.bbox.top})→"
+            f"({preview.bbox.right}, {preview.bbox.bottom}). "
+            "Click Run Detection above to see the full diagnostic."
+        )
+
+    preview_img = render_band_preview(
+        base_bgr, band_bbox, y_band, x_band,
+        phase_a_records=None if detection_available else preview.phase_a_records,
+        show_frame=not ocr_ran,
+    )
+
+    with img_col:
+        st.image(preview_img, caption=img_caption, use_container_width=True)
 
     # Persist slider values per-image so subsequent renders + Run Detection use them.
     st.session_state[overrides_key] = {

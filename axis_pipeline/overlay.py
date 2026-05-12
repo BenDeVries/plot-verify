@@ -26,6 +26,7 @@ def render_overlay(
     *,
     show_band_windows: bool = True,
     show_grid_rejected: bool = True,
+    show_frame: bool = True,
 ) -> np.ndarray:
     overlay = img_bgr.copy()
     if result is None or result.bbox is None:
@@ -54,7 +55,8 @@ def render_overlay(
         cv2.rectangle(overlay, (x0, y0), (x1, y1), color, 1)
 
     # Plot frame.
-    cv2.rectangle(overlay, (bbox.left, bbox.top), (bbox.right, bbox.bottom), (0, 0, 200), 2)
+    if show_frame:
+        cv2.rectangle(overlay, (bbox.left, bbox.top), (bbox.right, bbox.bottom), (0, 0, 200), 2)
 
     # Geometric ticks (raw): light blue.
     if show_grid_rejected:
@@ -119,6 +121,7 @@ def render_band_preview(
     x_band: Tuple[int, int, int, int],
     *,
     phase_a_records: Optional[List[OCRRecord]] = None,
+    show_frame: bool = True,
 ) -> np.ndarray:
     """Lightweight preview overlay for the manual-band UI.
 
@@ -165,7 +168,8 @@ def render_band_preview(
             cv2.rectangle(overlay, (x0, y0), (x1, y1), color, 1)
 
     # Plot frame outline (red, slightly thicker so the user can always find it).
-    cv2.rectangle(overlay, (bbox.left, bbox.top), (bbox.right, bbox.bottom),
-                  (0, 0, 200), 2)
+    if show_frame:
+        cv2.rectangle(overlay, (bbox.left, bbox.top), (bbox.right, bbox.bottom),
+                      (0, 0, 200), 2)
 
     return cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)

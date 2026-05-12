@@ -303,32 +303,33 @@ def crop_band(
 # Band geometry helpers
 # ----------------------------------------------------------------------
 
-def y_label_band(bbox, *, extra_left: int = 55, extra_vertical: int = 4) -> Tuple[int, int, int, int]:
+def y_label_band(bbox, *, extra_left: int = 55, extra_vertical: int = 0) -> Tuple[int, int, int, int]:
     """Strip immediately left of the y-axis where y-tick labels live.
 
-    Defaults are tight enough to exclude rotated y-axis title text in the far-left
-    margin of typical scientific journal plots. Pass larger `extra_left` for plots
-    with unusually wide tick label fonts.
+    `extra_vertical` trims inward from the top and bottom of the bbox, letting
+    the user exclude labels at the extreme ends of the y-axis.
     """
+    top    = max(0, int(bbox.top) + extra_vertical)
+    bottom = max(top, int(bbox.bottom) - extra_vertical)
     return (
         max(0, int(bbox.left) - extra_left),
-        max(0, int(bbox.top) - extra_vertical),
+        top,
         max(0, int(bbox.left) - 1),                      # stop just left of axis line
-        int(bbox.bottom) + extra_vertical,
+        bottom,
     )
 
 
-def x_label_band(bbox, *, extra_below: int = 28, extra_horizontal: int = 4) -> Tuple[int, int, int, int]:
+def x_label_band(bbox, *, extra_below: int = 28, extra_horizontal: int = 0) -> Tuple[int, int, int, int]:
     """Strip immediately below the x-axis where x-tick labels live.
 
-    Defaults are tight enough to exclude the x-axis title which typically sits
-    30-50px below the tick labels. Pass larger `extra_below` for plots with
-    unusually large tick label fonts. Small `extra_horizontal` keeps the band
-    from reaching into the y-axis label area at the left edge.
+    `extra_horizontal` trims inward from the left and right of the bbox, letting
+    the user exclude labels at the extreme ends of the x-axis.
     """
+    left  = max(0, int(bbox.left) + extra_horizontal)
+    right = max(left, int(bbox.right) - extra_horizontal)
     return (
-        max(0, int(bbox.left) - extra_horizontal),
+        left,
         int(bbox.bottom) + 2,                            # start just below axis line
-        int(bbox.right) + extra_horizontal,
+        right,
         int(bbox.bottom) + 2 + extra_below,
     )
