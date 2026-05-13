@@ -40,7 +40,7 @@ from axis_pipeline import (
 )
 
 
-REQUIRED_COLUMNS = ["series", "x", "y", "y_err_lower", "y_err_upper", "series_color"]
+REQUIRED_COLUMNS = ["series", "x", "y", "y_err_lower", "y_err_upper"]
 FALLBACK_HEX = "#888888"
 rng = np.random.default_rng(12345)
 
@@ -321,7 +321,9 @@ def _get_series_mask(image_hash, series_name, state, df, img_bgr):
     if df is not None:
         rows = df[df["series"] == series_name]
         if len(rows):
-            color_hex = rows["series_color"].iloc[0]
+            raw = rows["series_color"].iloc[0]
+            if is_valid_hex(raw):
+                color_hex = raw
     if state.get("use_delta_e", True) and df is not None:
         return cached_delta_e_mask(
             image_hash, color_hex, int(state.get("delta_e", 10)), img_bgr
@@ -565,6 +567,9 @@ def _init_state():
     st.session_state.setdefault("ocr_mask_all_text", False)
     st.session_state.setdefault("ocr_min_confidence", 0.20)
     st.session_state.setdefault("show_ocr_debug_overlay", True)
+    st.session_state.setdefault("csv_has_series_color", True)
+    st.session_state.setdefault("series_color_overrides", {})
+    st.session_state.setdefault("picking_color_for", None)
     # Calibration-preview tab state.
     # Cache key: image_hash → FramePreview, so slider changes don't re-run
     # Phase A OCR. Per-image overrides are stored separately under
@@ -725,6 +730,11 @@ def _load_csv(csv_source):
         st.error(f"CSV is missing required columns: {missing}")
         return None
 
+    has_series_color = "series_color" in df.columns
+    st.session_state["csv_has_series_color"] = has_series_color
+    if not has_series_color:
+        df["series_color"] = pd.NA
+
     df["x"] = pd.to_numeric(df["x"], errors="coerce")
     df["y"] = pd.to_numeric(df["y"], errors="coerce")
     df["y_err_lower"] = pd.to_numeric(df["y_err_lower"], errors="coerce")
@@ -737,13 +747,14 @@ def _load_csv(csv_source):
 
     df["series"] = df["series"].astype(str)
 
-    invalid = ~df["series_color"].apply(is_valid_hex)
-    if invalid.any():
-        st.warning(
-            f"{int(invalid.sum())} row(s) have invalid series_color values; "
-            f"using {FALLBACK_HEX} as a fallback."
-        )
-        df.loc[invalid, "series_color"] = FALLBACK_HEX
+    if has_series_color:
+        invalid = ~df["series_color"].apply(is_valid_hex)
+        if invalid.any():
+            st.warning(
+                f"{int(invalid.sum())} row(s) have invalid series_color values; "
+                f"using {FALLBACK_HEX} as a fallback."
+            )
+            df.loc[invalid, "series_color"] = FALLBACK_HEX
 
     return df
 
@@ -814,8 +825,9 @@ def render_sidebar():
             csv_hash = hashlib.md5(csv_source.encode("utf-8")).hexdigest()
             new_df = _load_csv(csv_source)
             if new_df is not None:
-                st.session_state.df = new_df
                 if st.session_state.csv_hash != csv_hash:
+                    # New CSV — clear any user-picked color overrides from the old file.
+                    st.session_state.series_color_overrides = {}
                     st.session_state.series_states = _init_series_states(new_df)
                     st.session_state.csv_hash = csv_hash
                     # Clear the masked calibration image — series identities changed.
@@ -826,6 +838,11 @@ def render_sidebar():
                     if st.session_state.calibration.get("applied"):
                         st.session_state.calibration = {"applied": False}
                         st.toast("Calibration cleared — re-apply after new data.", icon="🔄")
+                else:
+                    # Same CSV — re-apply any colors the user picked from the image.
+                    for sname, color in st.session_state.get("series_color_overrides", {}).items():
+                        new_df.loc[new_df["series"] == sname, "series_color"] = color
+                st.session_state.df = new_df
                 df = new_df
 
         # ----- Calibration status (read-only — controls are in the Calibrate tab) -----
@@ -1456,7 +1473,7 @@ def _render_mask_view(img_rgb, img_bgr, img_hash, df, series_states, cal,
     else:
         display = build_composite(img_bgr, img_hash, series_states, df, cal)
 
-    fig = px.imshow(display, binary_string=True)
+    fig = px.imshow(display)
     fig.update_layout(
         margin=dict(l=0, r=0, t=0, b=0),
         height=container_height,
@@ -1490,6 +1507,141 @@ def _render_overlay_view(img_rgb, df, series_states, cal,
     )
 
 
+def _render_mask_color_picker(img_rgb, img_bgr, img_hash, df, series_states, cal):
+    """Color assignment UI for the Masks tab when series_color was absent from the CSV.
+
+    Shows a table of series with their current colors (initially NA) alongside the
+    mask composite. Clicking 'Pick' then clicking the image samples the pixel color
+    and assigns it to that series.
+    """
+    series_list = df["series"].drop_duplicates().tolist()
+    picking_for = st.session_state.get("picking_color_for")
+
+    table_col, img_col = st.columns([1, 2])
+
+    with table_col:
+        st.markdown("**Series Colors**")
+        st.caption("Click **Pick**, then click anywhere on the image to sample a color.")
+        for s in series_list:
+            color = df[df["series"] == s]["series_color"].iloc[0]
+            valid = is_valid_hex(color)
+            is_picking = (picking_for == s)
+
+            c1, c2 = st.columns([3, 2])
+            with c1:
+                if valid:
+                    st.markdown(
+                        f"<div style='display:flex;align-items:center;gap:6px;padding-top:6px'>"
+                        f"<span style='width:14px;height:14px;background:{color};"
+                        f"border:1px solid #555;display:inline-block;border-radius:2px'></span>"
+                        f"<span>{s}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f"<div style='padding-top:6px'>{s} "
+                        f"<em style='color:#888'>— no color</em></div>",
+                        unsafe_allow_html=True,
+                    )
+            with c2:
+                btn_label = "🎯 Picking..." if is_picking else ("Repick" if valid else "Pick")
+                btn_type = "primary" if is_picking else "secondary"
+                if st.button(btn_label, key=f"cpick_{s}",
+                             type=btn_type, use_container_width=True):
+                    # Toggle: click again to cancel.
+                    st.session_state["picking_color_for"] = None if is_picking else s
+                    st.rerun()
+
+    with img_col:
+        if picking_for:
+            st.info(
+                f"Click the image to set the color for **{picking_for}**. "
+                "Click '🎯 Picking...' to cancel."
+            )
+
+        # In pick mode show the original so the user sees real colours to click on.
+        # Otherwise show the composite so hide/show visibility controls are effective.
+        if picking_for:
+            display = img_rgb
+        elif df is not None and series_states:
+            display = build_composite(img_bgr, img_hash, series_states, df, cal)
+        else:
+            display = img_rgb
+
+        fig = px.imshow(display, binary_string=True)
+        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=580)
+        fig.update_xaxes(title="pixel X", showticklabels=True)
+        fig.update_yaxes(title="pixel Y", showticklabels=True)
+
+        if picking_for:
+            img_h, img_w = display.shape[:2]
+            # px.imshow produces an Image trace which doesn't fire selection
+            # events on click. Overlay a near-invisible scatter grid so that
+            # clicking anywhere on the image selects the nearest grid point
+            # and populates event.selection.points with (x, y) pixel coords.
+            step_x = max(4, img_w // 100)
+            step_y = max(4, img_h // 100)
+            grid_xs = [x for x in range(0, img_w, step_x)
+                       for _ in range(0, img_h, step_y)]
+            grid_ys = [y for _ in range(0, img_w, step_x)
+                       for y in range(0, img_h, step_y)]
+            grid_colors = [
+                "#{:02x}{:02x}{:02x}".format(int(img_bgr[gy, gx][2]),
+                                             int(img_bgr[gy, gx][1]),
+                                             int(img_bgr[gy, gx][0]))
+                for gx, gy in zip(grid_xs, grid_ys)
+            ]
+            fig.add_trace(go.Scatter(
+                x=grid_xs, y=grid_ys,
+                mode="markers",
+                marker=dict(size=max(step_x, step_y) + 4, opacity=0.01,
+                            color="rgba(255,255,255,0.01)"),
+                customdata=grid_colors,
+                hovertemplate="x=%{x}, y=%{y}<br>%{customdata}<extra></extra>",
+                showlegend=False,
+            ))
+            # clickmode="event+select" makes a single click on a scatter point
+            # fire plotly_selected, which Streamlit captures via on_select.
+            # dragmode is left at default (zoom) so the user can still pan/zoom.
+            fig.update_layout(clickmode="event+select")
+
+            event = st.plotly_chart(
+                fig, use_container_width=True,
+                key="mask_chart_color_pick",
+                on_select="rerun",
+                selection_mode="points",
+            )
+            if event.selection and event.selection.points:
+                pt = event.selection.points[0]
+                px_x = max(0, min(int(round(float(pt.get("x", 0)))), img_w - 1))
+                px_y = max(0, min(int(round(float(pt.get("y", 0)))), img_h - 1))
+                pixel = img_bgr[px_y, px_x]
+                b_val, g_val, r_val = int(pixel[0]), int(pixel[1]), int(pixel[2])
+                hex_color = "#{:02x}{:02x}{:02x}".format(r_val, g_val, b_val)
+                # Persist override so it survives CSV reloads on rerun.
+                overrides = st.session_state.get("series_color_overrides", {})
+                overrides[picking_for] = hex_color
+                st.session_state["series_color_overrides"] = overrides
+                # Update HSV sliders in series_states immediately.
+                if picking_for in series_states:
+                    try:
+                        hue, sat, val = hex_to_hsv_opencv(hex_color)
+                    except Exception:
+                        hue, sat, val = 0, 128, 128
+                    series_states[picking_for].update({
+                        "h_min": max(0, hue - 15),
+                        "h_max": min(179, hue + 15),
+                        "s_min": max(0, sat - 60),
+                        "s_max": min(255, sat + 60),
+                        "v_min": max(0, val - 60),
+                        "v_max": min(255, val + 60),
+                    })
+                st.session_state["picking_color_for"] = None
+                st.rerun()
+        else:
+            st.plotly_chart(fig, use_container_width=True, key="mask_chart_color_nopick")
+
+
 def render_main():
     if "image_rgb" not in st.session_state:
         st.info("Upload an image and CSV in the sidebar to begin.")
@@ -1510,8 +1662,11 @@ def render_main():
     ])
 
     with mask_tab:
-        _render_mask_view(img_rgb, img_bgr, img_hash, df, series_states, cal,
-                          key_suffix="_masks")
+        if not st.session_state.get("csv_has_series_color", True) and df is not None:
+            _render_mask_color_picker(img_rgb, img_bgr, img_hash, df, series_states, cal)
+        else:
+            _render_mask_view(img_rgb, img_bgr, img_hash, df, series_states, cal,
+                              key_suffix="_masks")
 
     with calib_tab:
         _render_calibration_tab(img_bgr)

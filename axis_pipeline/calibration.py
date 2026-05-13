@@ -126,9 +126,11 @@ def calibrate_axis(
     se_at_min = candidates[min_i][2]
     threshold = min_rmse + se_at_min
 
-    valid = [c for c in candidates if c[1].rmse_data < threshold]
+    # Use <= with a small epsilon so the min-rmse candidate is always included
+    # even when threshold rounds to exactly min_rmse (se_at_min ≈ 0).
+    valid = [c for c in candidates if c[1].rmse_data <= threshold + 1e-9]
     if not valid:
-        valid = candidates
+        valid = [candidates[min_i]]
 
     chosen_pts, chosen_cal, _ = max(valid, key=lambda c: len(c[0]))
 
