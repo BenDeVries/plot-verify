@@ -124,7 +124,20 @@ def _detect_frame_internal(
     diagnostics["phase_a_record_count"] = len(full_records)
 
     # ── Geometric axis detection on text-masked image ─────────────
-    masked = ocr_mod.mask_records(img_bgr, full_records, pad=cfg.ocr_pad_px)
+    # Filter out implausibly large Phase A detections before masking.
+    # EasyOCR sometimes merges a whole column of tick labels into one tall
+    # region (e.g. "10^0"–"10^30" on a MATLAB log-log plot → one bbox spanning
+    # the full y-axis height). That bbox overlaps and whites out the axis line
+    # itself, causing geometric detection to fail. Individual text labels are
+    # typically < 1% of image area; a merged column is 6–10%.
+    _img_area = img_bgr.shape[0] * img_bgr.shape[1]
+    _max_mask_area = 0.06 * _img_area
+    _records_for_mask = [
+        r for r in full_records
+        if (r.bbox[2] - r.bbox[0]) * (r.bbox[3] - r.bbox[1]) <= _max_mask_area
+    ]
+    diagnostics["phase_a_oversized_filtered"] = len(full_records) - len(_records_for_mask)
+    masked = ocr_mod.mask_records(img_bgr, _records_for_mask, pad=cfg.ocr_pad_px)
     bbox, mode, axis_conf, axis_warnings = geom.detect_axes(masked)
     warnings.extend(axis_warnings)
     diagnostics["axis_confidence"] = float(axis_conf)
@@ -488,7 +501,7 @@ def _band_ocr_with_fallback(
             crop,
             gpu=cfg.use_gpu,
             min_confidence=cfg.min_ocr_confidence,
-            allowlist="0123456789.+-eE^",
+            allowlist="0123456789.+-eE^x",
             phase=phase_name,
             bbox_offset=offset,
             upsample=cfg.band_upsample,

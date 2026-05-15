@@ -9,6 +9,7 @@ scales to be added later without changing the rest of the pipeline.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
@@ -18,7 +19,7 @@ import numpy as np
 
 class ScaleType(str, Enum):
     LINEAR = "linear"
-    # LOG10 = "log10"           # planned
+    LOG10 = "log10"
     # CATEGORICAL = "categorical"  # planned
 
 
@@ -150,24 +151,32 @@ class PairedTick:
 
 @dataclass
 class AxisCalibration:
-    scale: float        # data units per pixel  (slope of data = scale*pixel + offset)
-    offset: float       # data value at pixel 0
+    scale: float        # slope: log10(data) per pixel for log10; data per pixel for linear
+    offset: float       # intercept at pixel 0 (in the same transformed space as scale)
     n_points: int
     method: str         # "ols" | "two_point"
     rmse_px: float      # residual RMS in pixel coordinates
-    rmse_data: float    # residual RMS in data coordinates
+    rmse_data: float    # residual RMS in transformed-data space (log10 units for LOG10 axes)
     log_likelihood: Optional[float] = None
     slope_se: Optional[float] = None        # standard error of slope
     offset_se: Optional[float] = None
     df_t: Optional[float] = None            # Student-t df, if used
+    log_base: Optional[float] = None        # 10.0 for log10 axes; None for linear
 
     def data_to_pixel(self, value: float) -> float:
         if abs(self.scale) < 1e-15:
             return float("nan")
+        if self.log_base:
+            if value <= 0:
+                return float("nan")
+            return (math.log(value, self.log_base) - self.offset) / self.scale
         return (value - self.offset) / self.scale
 
     def pixel_to_data(self, px: float) -> float:
-        return self.scale * px + self.offset
+        lin = self.scale * px + self.offset
+        if self.log_base:
+            return self.log_base ** lin
+        return lin
 
     def to_dict(self) -> Dict[str, object]:
         return asdict(self)

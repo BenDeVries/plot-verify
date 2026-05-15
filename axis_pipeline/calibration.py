@@ -1,18 +1,21 @@
-"""Linear axis calibration: fit data = scale * pixel + offset.
+"""Linear and log-linear axis calibration.
+
+For LINEAR axes:  fit  data = scale * pixel + offset  (OLS).
+For LOG10 axes:   fit  log10(data) = scale * pixel + offset  (OLS on log-space).
 
 OLS (ordinary least squares) is used throughout. A greedy search removes one
-point at a time while rmse (data units) improves, stopping when no removal
-helps or only 3 points remain. All candidate sets visited during the search
-are collected. The 1-SE rule then selects the candidate with the most points
-whose rmse < min(rmse) + SE, where SE = sqrt(RSS/(n-2)) of the minimum-rmse
-candidate. Removed points are marked include=False so the pipeline's anchor
-selection also excludes them.
+point at a time while rmse improves, stopping when no removal helps or only 3
+points remain. All candidate sets are collected. The 1-SE rule then selects
+the candidate with the most points whose rmse < min(rmse) + SE (where SE is
+floored by the initial full-set RSE to prevent degenerate collapse).
 
-We fit each axis independently. Fitting in pixel space (data ~ pixel)
-gives slope=scale, offset=data-intercept directly.
+Log-scale auto-detection: if all included values are positive and span ≥ 2
+orders of magnitude, the axis is treated as log10. The returned AxisCalibration
+has log_base=10.0 and pixel_to_data / data_to_pixel use 10^(linear) mapping.
 """
 from __future__ import annotations
 
+import math
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -49,15 +52,33 @@ def _ols(pixels: np.ndarray, values: np.ndarray) -> AxisCalibration:
     )
 
 
+def _is_log10_scale(pts: List[PairedTick]) -> bool:
+    """Return True when all values are positive and span ≥ 2 orders of magnitude.
+
+    A 2-decade span (100× range) is enough to distinguish log-scale axes
+    (e.g. 1e-14 … 1e-7) from linear axes (e.g. 0.5 … 3.5).
+    """
+    vals = [t.data_value for t in pts if t.data_value is not None]
+    if len(vals) < 2 or any(v <= 0 for v in vals):
+        return False
+    log_vals = [math.log10(v) for v in vals]
+    return (max(log_vals) - min(log_vals)) >= 2.0
+
+
 def _make_candidate(
     pts: List[PairedTick],
+    value_transform=None,
 ) -> Tuple[List[PairedTick], AxisCalibration, float]:
     """Return (pts, cal, rse) for a set of points.
 
     rse = sqrt(RSS / (n-2)); 0.0 when n <= 2 (no degrees of freedom).
+    value_transform, if provided, is applied element-wise to data values
+    before OLS (e.g. math.log10 for log-scale axes).
     """
     pixels = np.array([t.pixel_position for t in pts], dtype=float)
     values = np.array([t.data_value for t in pts], dtype=float)
+    if value_transform is not None:
+        values = np.array([value_transform(v) for v in values], dtype=float)
     cal = _ols(pixels, values)
     rse = 0.0
     if len(pts) > 2:
@@ -70,17 +91,22 @@ def _make_candidate(
 def calibrate_axis(
     paired_ticks: List[PairedTick],
 ) -> Optional[AxisCalibration]:
-    """Fit a 1-D linear OLS calibration with greedy outlier removal and 1-SE selection.
+    """Fit a 1-D OLS calibration with greedy outlier removal and 1-SE selection.
 
-    Greedy phase: at each step remove the point whose removal most reduces rmse
-    (data units), stopping when no removal improves rmse or only 3 points
-    remain. Each candidate set (including the initial full set) is recorded.
+    Auto-detects log10 scale: if all included values are positive and span ≥ 2
+    orders of magnitude, the fit is performed on log10(data) vs pixel.  The
+    returned AxisCalibration has log_base=10.0 and its pixel_to_data /
+    data_to_pixel methods apply the corresponding inverse/forward transform.
 
-    Selection phase (1-SE rule): find the candidate with minimum rmse; compute
-    its residual standard error SE = sqrt(RSS/(n-2)). Among all candidates with
-    rmse < min_rmse + SE, choose the one with the most points.
+    Greedy phase: remove the point whose removal most reduces rmse in the
+    (possibly log-transformed) value space, stopping when no removal helps or
+    only 3 points remain.
 
-    Returns None if fewer than 2 included points are available or the data are
+    Selection phase (1-SE rule): find minimum-rmse candidate; compute its SE =
+    sqrt(RSS/(n-2)), floored by the initial full-set RSE.  Among all candidates
+    with rmse ≤ min_rmse + SE, choose the one with the most points.
+
+    Returns None if fewer than 2 included points are available or data are
     degenerate (all same value or pixel position).
     """
     inc = [t for t in paired_ticks if t.include and t.data_value is not None]
@@ -92,13 +118,19 @@ def calibrate_axis(
     if len({round(t.pixel_position, 6) for t in inc}) < 2:
         return None
 
+    # Detect log10 scale and set up a value transform for the OLS.
+    use_log = _is_log10_scale(inc)
+    vt = math.log10 if use_log else None   # value_transform shorthand
+
     active = list(inc)
-    candidates = [_make_candidate(active)]
+    candidates = [_make_candidate(active, value_transform=vt)]
     initial_rse = candidates[0][2]   # RSE of the full initial set
 
     while len(active) > 3:
         pixels = np.array([t.pixel_position for t in active], dtype=float)
         values = np.array([t.data_value for t in active], dtype=float)
+        if vt is not None:
+            values = np.array([vt(v) for v in values], dtype=float)
         current_rmse = candidates[-1][1].rmse_data
 
         best_idx = -1
@@ -119,7 +151,7 @@ def calibrate_axis(
             break
 
         active.pop(best_idx)
-        candidates.append(_make_candidate(active))
+        candidates.append(_make_candidate(active, value_transform=vt))
 
     # 1-SE rule: locate the minimum-rmse candidate and its SE
     min_i = min(range(len(candidates)), key=lambda i: candidates[i][1].rmse_data)
@@ -142,5 +174,18 @@ def calibrate_axis(
     chosen_ids = {id(t) for t in chosen_pts}
     for t in inc:
         t.include = id(t) in chosen_ids
+
+    if use_log:
+        chosen_cal = AxisCalibration(
+            scale=chosen_cal.scale,
+            offset=chosen_cal.offset,
+            n_points=chosen_cal.n_points,
+            method=chosen_cal.method,
+            rmse_px=chosen_cal.rmse_px,
+            rmse_data=chosen_cal.rmse_data,
+            slope_se=chosen_cal.slope_se,
+            offset_se=chosen_cal.offset_se,
+            log_base=10.0,
+        )
 
     return chosen_cal
