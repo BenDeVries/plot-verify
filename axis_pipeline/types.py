@@ -231,6 +231,12 @@ class CalibrationConfig:
     # Misc
     enable_phase_b_y_band: bool = True
     enable_phase_c_x_band: bool = True
+    # Inward tick detection
+    detect_inward_ticks: bool = True
+    inward_tick_depth_frac: float = 0.025   # fraction of plot height/width
+    inward_tick_min_depth_px: int = 10
+    tick_dedup_tolerance_px: float = 4.0
+    allow_gridline_supported_ticks: bool = True
 
 
 @dataclass

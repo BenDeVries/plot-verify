@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, List, Optional, Tuple
 
+import cv2
 import numpy as np
 
 from . import geometry as geom
@@ -231,38 +232,12 @@ def run_calibration(
 
     # ── Geometric tick detection ──────────────────────────────────
     _, dark = geom.prepare_dark_mask(masked)
-    x_tick_positions = geom.detect_x_tick_positions(dark, bbox)
-    y_tick_positions = geom.detect_y_tick_positions(dark, bbox)
-    diagnostics["x_tick_raw_count"] = len(x_tick_positions)
-    diagnostics["y_tick_raw_count"] = len(y_tick_positions)
+    x_outward, x_inward, x_tick_diag = geom.detect_x_tick_positions(dark, bbox, config=cfg)
+    y_outward, y_inward, y_tick_diag = geom.detect_y_tick_positions(dark, bbox, config=cfg)
+    diagnostics.update(x_tick_diag)
+    diagnostics.update(y_tick_diag)
 
-    # ── Grid fit (linear) ─────────────────────────────────────────
-    if cfg.scale_type == ScaleType.LINEAR.value:
-        x_grid = fit_linear_grid(
-            x_tick_positions,
-            tolerance_frac=cfg.grid_residual_tolerance_frac,
-            min_ticks=cfg.grid_min_ticks,
-        )
-        y_grid = fit_linear_grid(
-            y_tick_positions,
-            tolerance_frac=cfg.grid_residual_tolerance_frac,
-            min_ticks=cfg.grid_min_ticks,
-        )
-    else:
-        warnings.append(f"Scale type {cfg.scale_type!r} is not yet implemented; "
-                        "treating as linear.")
-        x_grid = fit_linear_grid(x_tick_positions,
-                                 tolerance_frac=cfg.grid_residual_tolerance_frac,
-                                 min_ticks=cfg.grid_min_ticks)
-        y_grid = fit_linear_grid(y_tick_positions,
-                                 tolerance_frac=cfg.grid_residual_tolerance_frac,
-                                 min_ticks=cfg.grid_min_ticks)
-    diagnostics["x_grid_kept"] = len(x_grid.fitted_positions)
-    diagnostics["y_grid_kept"] = len(y_grid.fitted_positions)
-    diagnostics["x_grid_rejected"] = len(x_grid.rejected_positions)
-    diagnostics["y_grid_rejected"] = len(y_grid.rejected_positions)
-
-    # ── Pairing ───────────────────────────────────────────────────
+    # ── Label filtering (done early so fallback logic can use the records) ──
     x_horiz = cfg.x_band_extra_horizontal_px
     y_vert = cfg.y_band_extra_vertical_px
     x_label_records = pair_mod.filter_x_axis_labels(
@@ -275,8 +250,52 @@ def run_calibration(
         y_min=bbox.top + y_vert if y_vert > 0 else None,
         y_max=bbox.bottom - y_vert if y_vert > 0 else None,
     )
+
+    # When the dedicated band scan produced enough records it is authoritative:
+    # suppress full-phase (Phase A) records from pairing so stray detections
+    # (e.g. a "2" misread from a "2e+90" label in the full image scan) cannot
+    # displace or corrupt the band-scan calibration.
+    _y_band_count = sum(1 for r in y_label_records if r.phase == OCRPhase.Y_BAND.value)
+    if _y_band_count >= cfg.grid_min_ticks:
+        y_label_records = [r for r in y_label_records if r.phase == OCRPhase.Y_BAND.value]
+    _x_band_count = sum(1 for r in x_label_records if r.phase == OCRPhase.X_BAND.value)
+    if _x_band_count >= cfg.grid_min_ticks:
+        x_label_records = [r for r in x_label_records if r.phase == OCRPhase.X_BAND.value]
+
     diagnostics["x_label_candidates"] = len(x_label_records)
     diagnostics["y_label_candidates"] = len(y_label_records)
+
+    # ── Grid fit with cascade: outward → inward → merged ─────────
+    # Try outward-only first to prevent inward false-positives (data markers,
+    # gridlines) from poisoning the modal-spacing estimate. Only if outward
+    # detection fails do we try inward or the merged candidate set.
+    if cfg.scale_type != ScaleType.LINEAR.value:
+        warnings.append(f"Scale type {cfg.scale_type!r} is not yet implemented; "
+                        "treating as linear.")
+
+    x_tick_positions, x_grid = _cascade_grid_fit(
+        "x", x_outward, x_inward, cfg, diagnostics,
+    )
+    y_tick_positions, y_grid = _cascade_grid_fit(
+        "y", y_outward, y_inward, cfg, diagnostics,
+    )
+    diagnostics["x_tick_raw_count"] = len(x_tick_positions)
+    diagnostics["y_tick_raw_count"] = len(y_tick_positions)
+
+    # ── Label-center fallback: last resort if geometric grid failed ───────────
+    x_tick_positions, x_grid = _label_center_fallback(
+        "x", x_tick_positions, x_grid, x_label_records, cfg, diagnostics, warnings,
+    )
+    y_tick_positions, y_grid = _label_center_fallback(
+        "y", y_tick_positions, y_grid, y_label_records, cfg, diagnostics, warnings,
+    )
+
+    diagnostics["x_grid_kept"] = len(x_grid.fitted_positions)
+    diagnostics["y_grid_kept"] = len(y_grid.fitted_positions)
+    diagnostics["x_grid_rejected"] = len(x_grid.rejected_positions)
+    diagnostics["y_grid_rejected"] = len(y_grid.rejected_positions)
+
+    # ── Pairing ───────────────────────────────────────────────────
 
     x_max_pair_dist = min(
         cfg.pair_max_distance_abs_px,
@@ -469,7 +488,7 @@ def _band_ocr_with_fallback(
             crop,
             gpu=cfg.use_gpu,
             min_confidence=cfg.min_ocr_confidence,
-            allowlist="0123456789.+-eE",
+            allowlist="0123456789.+-eE^",
             phase=phase_name,
             bbox_offset=offset,
             upsample=cfg.band_upsample,
@@ -484,6 +503,36 @@ def _band_ocr_with_fallback(
 
     n_numeric = sum(1 for r in records if r.is_numeric)
     if n_numeric > 0 or wide_extra <= narrow_extra:
+        # For the y-axis: if all numeric records have the same value, the labels
+        # are likely rendered as rotated vertical text (R's default las=0 style,
+        # where each character is stacked top-to-bottom). Normal horizontal OCR
+        # only detects the topmost digit of each stack and misclassifies it.
+        # Re-try on a 90°-CW-rotated copy of the band so text is horizontal.
+        if axis == "y" and n_numeric >= 3:
+            numerics = [r for r in records if r.is_numeric and r.value is not None]
+            distinct_vals = {r.value for r in numerics}
+            # Trigger rotation when distinct values are far fewer than records:
+            # vertical (rotated) labels produce the same misread for every label.
+            if len(distinct_vals) * 2 <= n_numeric:
+                try:
+                    band = compute_band(narrow_extra)
+                    crop, crop_offset = ocr_mod.crop_band(img_bgr, band)
+                    if crop.size > 0:
+                        rot_records = _run_rotated_band_ocr(
+                            ocr, crop, crop_offset,
+                            cfg=cfg, phase_name=phase_name,
+                            band_detection_params=band_detection_params,
+                        )
+                        rot_distinct = {r.value for r in rot_records}
+                        if len(rot_distinct) > 1:
+                            warnings.append(
+                                "Y-axis: normal band scan returned all-same values "
+                                "(vertical/rotated labels detected, R las=0 style); "
+                                "using 90°-CW-rotation pass for y-tick labels."
+                            )
+                            return rot_records, narrow_extra
+                except Exception as e:
+                    warnings.append(f"Y-axis rotated band OCR failed: {type(e).__name__}: {e}")
         return records, narrow_extra
 
     # Narrow band returned no numerics — retry once with the wider fallback band.
@@ -497,6 +546,163 @@ def _band_ocr_with_fallback(
     if n_wide_numeric > n_numeric:
         return wide_records, wide_extra
     return records, narrow_extra
+
+
+def _run_rotated_band_ocr(
+    ocr: OCRRunner,
+    crop: np.ndarray,
+    offset: Tuple[int, int],
+    *,
+    cfg: CalibrationConfig,
+    phase_name: str,
+    band_detection_params: dict,
+) -> List[OCRRecord]:
+    """Run band OCR on a 90°-CW-rotated copy of `crop`; map coordinates back.
+
+    Handles R plots using las=0 (default) where y-axis tick labels are rendered
+    as vertical text (one character per row, reading bottom-to-top). Normal
+    horizontal OCR only detects the topmost digit of each stacked label and
+    typically misclassifies the circular shapes as '8'.
+
+    After rotating so text is horizontal, detected bbox/center coords are
+    mapped back to the original crop coordinate system via the inverse of
+    cv2.ROTATE_90_CLOCKWISE:
+        x_image = rcy + dx          (rotated y-row  → original x-col)
+        y_image = H − 1 − rcx + dy  (rotated x-col → original y-row, reversed)
+    """
+    H, W = crop.shape[:2]
+    rotated = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
+    dx, dy = offset
+
+    raw_records = ocr(
+        rotated,
+        gpu=cfg.use_gpu,
+        min_confidence=cfg.min_ocr_confidence,
+        allowlist="0123456789.+-eE^",
+        phase=phase_name,
+        bbox_offset=(0, 0),
+        upsample=cfg.band_upsample,
+        detection_params=band_detection_params,
+    )
+
+    out: List[OCRRecord] = []
+    for r in raw_records:
+        if not r.is_numeric:
+            continue
+        rx0, ry0, rx1, ry1 = r.bbox
+        rcx = (rx0 + rx1) / 2.0
+        rcy = (ry0 + ry1) / 2.0
+        # Inverse rotation: rotated(x_r, y_r) → original(y_r, H-1-x_r)
+        cx = rcy + dx
+        cy = H - 1 - rcx + dy
+        ox0 = int(round(ry0 + dx))
+        ox1 = int(round(ry1 + dx))
+        oy0 = int(round(H - 1 - rx1 + dy))
+        oy1 = int(round(H - 1 - rx0 + dy))
+        out.append(OCRRecord(
+            raw_text=r.raw_text,
+            cleaned_text=r.cleaned_text,
+            value=r.value,
+            is_numeric=True,
+            confidence=r.confidence,
+            bbox=(min(ox0, ox1), min(oy0, oy1), max(ox0, ox1), max(oy0, oy1)),
+            center=(cx, cy),
+            parse_status=r.parse_status,
+            parse_flag=r.parse_flag,
+            phase=r.phase,
+        ))
+    return out
+
+
+def _cascade_grid_fit(
+    axis: str,
+    outward: List[float],
+    inward: List[float],
+    cfg: CalibrationConfig,
+    diagnostics: dict,
+) -> Tuple[List[float], object]:
+    """Try grid fit on outward candidates first, then inward, then merged.
+
+    Cascade prevents inward false-positives (data markers, gridlines) from
+    corrupting the modal-spacing estimate when outward detection already succeeds.
+    Returns (positions_used, grid).
+    """
+    tol = cfg.grid_residual_tolerance_frac
+    min_t = cfg.grid_min_ticks
+    dedup = cfg.tick_dedup_tolerance_px
+
+    # 1. Outward only
+    grid = fit_linear_grid(outward, tolerance_frac=tol, min_ticks=min_t)
+    if grid.success:
+        diagnostics[f"{axis}_tick_detection_mode"] = "outward"
+        return outward, grid
+
+    # 2. Inward only
+    if inward:
+        grid = fit_linear_grid(inward, tolerance_frac=tol, min_ticks=min_t)
+        if grid.success:
+            diagnostics[f"{axis}_tick_detection_mode"] = "inward"
+            return inward, grid
+
+    # 3. Merged (deduplicated union)
+    merged = geom._dedup_positions(sorted(set(outward) | set(inward)), dedup)
+    grid = fit_linear_grid(merged, tolerance_frac=tol, min_ticks=min_t)
+    diagnostics[f"{axis}_tick_detection_mode"] = "merged" if grid.success else "failed"
+    return merged, grid
+
+
+def _label_center_fallback(
+    axis: str,
+    tick_positions: List[float],
+    grid,
+    label_records: List[OCRRecord],
+    cfg: CalibrationConfig,
+    diagnostics: dict,
+    warnings: List[str],
+) -> Tuple[List[float], object]:
+    """If geometric grid fit failed, try fitting a grid to OCR label centers.
+
+    For the x-axis uses label x-centers; for y-axis uses label y-centers.
+    Only activates when the geometric grid failed AND >= grid_min_ticks monotonic
+    numeric labels are available. Returns (positions, grid) — either unchanged or
+    replaced by the fallback.
+    """
+    if grid.success:
+        return tick_positions, grid
+
+    numeric = [r for r in label_records if r.is_numeric and r.value is not None]
+    if len(numeric) < cfg.grid_min_ticks:
+        return tick_positions, grid
+
+    if axis == "x":
+        centers = sorted(r.center[0] for r in numeric)
+    else:
+        centers = sorted(r.center[1] for r in numeric)
+
+    # Quick monotonicity check on data values at the sorted center positions
+    sorted_by_center = sorted(numeric, key=lambda r: r.center[0] if axis == "x" else r.center[1])
+    values = [r.value for r in sorted_by_center]
+    if axis == "x":
+        is_mono = all(values[i] <= values[i + 1] for i in range(len(values) - 1))
+    else:
+        is_mono = all(values[i] >= values[i + 1] for i in range(len(values) - 1))
+    if not is_mono:
+        return tick_positions, grid
+
+    fallback_grid = fit_linear_grid(
+        centers,
+        tolerance_frac=cfg.grid_residual_tolerance_frac,
+        min_ticks=cfg.grid_min_ticks,
+    )
+    if not fallback_grid.success:
+        return tick_positions, grid
+
+    warnings.append(
+        f"{axis.upper()}-axis: no geometric ticks found; using OCR label centers as "
+        "provisional tick positions (label_center_fallback)."
+    )
+    diagnostics[f"{axis}_tick_detection_mode"] = "label_center_fallback"
+    return list(centers), fallback_grid
 
 
 def _diagnose_degenerate_axis(axis: str, paired: List[PairedTick]) -> str:

@@ -100,13 +100,6 @@ def parse_numeric_tick(text: str) -> Tuple[Optional[float], str, str, str]:
     if not raw:
         return None, raw, "not_numeric", "empty"
 
-    # Reject obviously non-numeric strings before trying OCR repairs;
-    # this prevents words like "Day" from being parsed after I→1 swaps.
-    allowed_letters = set("OoDdIlSsBeE")
-    letters = [ch for ch in raw if ch.isalpha()]
-    if any(ch not in allowed_letters for ch in letters):
-        return None, raw, "not_numeric", "contains non-numeric letters"
-
     repairs: List[str] = []
     trans = {
         "O": "0", "o": "0", "D": "0",
@@ -122,13 +115,35 @@ def parse_numeric_tick(text: str) -> Tuple[Optional[float], str, str, str]:
         else:
             repaired.append(ch)
     s = "".join(repaired)
+    # Normalise scientific-notation multipliers before the letter check so that
+    # "×" and "x" in "1×10^-3" / "1.5x10-3" are converted away and don't trip
+    # the non-numeric-letter rejection below.
     s = s.replace("×10", "e").replace("x10", "e").replace("X10", "e")
 
+    # Reject obviously non-numeric strings AFTER scientific-notation normalisation;
+    # this prevents words like "Day" from being parsed after D→0/I→1 swaps while
+    # still allowing "e" / "E" from scientific notation and the OCR-repair set.
+    allowed_letters = set("OoDdIlSsBeE")
+    letters = [ch for ch in s if ch.isalpha()]
+    if any(ch not in allowed_letters for ch in letters):
+        return None, raw, "not_numeric", "contains non-numeric letters"
+
+    # Explicit caret power-of-ten: "10^3", "10^-3" (with or without repairs).
     m = re.fullmatch(r"10\^([+-]?\d+)", s)
     if m:
         exp = int(m.group(1))
         flag = "; ".join(repairs) if repairs else ""
         return float(10 ** exp), s, "auto_corrected" if repairs else "parsed_log10", flag
+
+    # Fallback for OCR allowlist stripping the caret: "10-3" → 10^-3.
+    # This form only arises when EasyOCR's allowlist omits "^" and the label
+    # is a pure power of ten (no leading mantissa). An explicit sign is required
+    # so "100" or "101" are not misread as powers.
+    m2 = re.fullmatch(r"10([+-]\d+)", s)
+    if m2:
+        exp = int(m2.group(1))
+        flag = ("; ".join(repairs) + "; " if repairs else "") + "caret_stripped"
+        return float(10 ** exp), s, "parsed_log10", flag
 
     s2 = s.replace(",", "")
     s2 = re.sub(r"[^0-9eE+\-.]", "", s2)

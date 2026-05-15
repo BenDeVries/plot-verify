@@ -94,6 +94,7 @@ def calibrate_axis(
 
     active = list(inc)
     candidates = [_make_candidate(active)]
+    initial_rse = candidates[0][2]   # RSE of the full initial set
 
     while len(active) > 3:
         pixels = np.array([t.pixel_position for t in active], dtype=float)
@@ -124,6 +125,10 @@ def calibrate_axis(
     min_i = min(range(len(candidates)), key=lambda i: candidates[i][1].rmse_data)
     min_rmse = candidates[min_i][1].rmse_data
     se_at_min = candidates[min_i][2]
+    # Floor the SE with the initial full-set RSE so that a coincidentally-perfect
+    # subset (e.g. 3 equally-spaced points → rmse=0, SE=0) doesn't collapse the
+    # threshold to zero and exclude larger sets with small but non-zero RMSE.
+    se_at_min = max(se_at_min, initial_rse)
     threshold = min_rmse + se_at_min
 
     # Use <= with a small epsilon so the min-rmse candidate is always included

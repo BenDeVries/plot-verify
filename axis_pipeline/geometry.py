@@ -15,13 +15,13 @@ detected for boxed-frame plots.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 from scipy.signal import find_peaks
 
-from .types import AxisFrame
+from .types import AxisFrame, CalibrationConfig
 
 
 @dataclass
@@ -74,6 +74,20 @@ def _group_runs(indices: np.ndarray) -> List[np.ndarray]:
         return []
     breaks = np.flatnonzero(np.diff(indices) > 1) + 1
     return [g for g in np.split(indices, breaks) if g.size]
+
+
+def _dedup_positions(positions: List[float], tolerance: float) -> List[float]:
+    """Merge positions within `tolerance` px, keeping the median of each cluster."""
+    if not positions:
+        return []
+    positions = sorted(positions)
+    clusters: List[List[float]] = [[positions[0]]]
+    for p in positions[1:]:
+        if p - clusters[-1][-1] <= tolerance:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    return [float(np.median(c)) for c in clusters]
 
 
 def _projection_candidates(dark: np.ndarray) -> Tuple[List[_AxisCandidate], List[_AxisCandidate]]:
@@ -230,38 +244,96 @@ def detect_axes(img_bgr: np.ndarray) -> Tuple[Optional[AxisFrame], str, float, L
 def detect_x_tick_positions(
     dark: np.ndarray,
     bbox: AxisFrame,
-) -> List[float]:
+    *,
+    config: Optional[CalibrationConfig] = None,
+) -> Tuple[List[float], List[float], Dict[str, object]]:
+    """Detect x-axis tick positions from outward (below) and inward (above) bands.
+
+    Returns (outward_positions, inward_positions, diagnostics_dict).
+    Pipeline uses these separately to try outward first, then inward, then merged.
+    """
     h, w = dark.shape[:2]
-    y0 = max(0, bbox.bottom)
-    y1 = min(h, bbox.bottom + max(10, int(0.025 * h)))
-    x0 = max(0, bbox.left)
-    x1 = min(w, bbox.right + 1)
-    band = dark[y0:y1, x0:x1]
-    if band.size == 0:
-        return []
-    proj = band.sum(axis=0).astype(float)
-    signal = np.maximum(0, proj - np.percentile(proj, 55))
+    bx0 = max(0, bbox.left)
+    bx1 = min(w, bbox.right + 1)
     min_dist = max(8, int((bbox.right - bbox.left) * 0.025))
-    height_thresh = max(1.0, np.max(signal) * 0.25) if np.max(signal) > 0 else 1.0
-    peaks, _ = find_peaks(signal, height=height_thresh, distance=min_dist)
-    return [float(x0 + p) for p in peaks if bbox.left - 5 <= x0 + p <= bbox.right + 5]
+
+    def _band_peaks(y0: int, y1: int) -> List[float]:
+        band = dark[y0:y1, bx0:bx1]
+        if band.size == 0:
+            return []
+        proj = band.sum(axis=0).astype(float)
+        signal = np.maximum(0, proj - np.percentile(proj, 55))
+        height_thresh = max(1.0, np.max(signal) * 0.25) if np.max(signal) > 0 else 1.0
+        peaks, _ = find_peaks(signal, height=height_thresh, distance=min_dist)
+        return [float(bx0 + p) for p in peaks if bbox.left - 5 <= bx0 + p <= bbox.right + 5]
+
+    # Outward band: below the axis line
+    outward_depth = max(10, int(0.025 * h))
+    outward = _band_peaks(max(0, bbox.bottom), min(h, bbox.bottom + outward_depth))
+
+    # Inward band: above the axis line (into the plot interior)
+    detect_inward = config is None or getattr(config, "detect_inward_ticks", True)
+    inward: List[float] = []
+    if detect_inward:
+        depth_frac = getattr(config, "inward_tick_depth_frac", 0.025) if config else 0.025
+        min_depth = getattr(config, "inward_tick_min_depth_px", 10) if config else 10
+        plot_h = max(1, bbox.bottom - bbox.top)
+        inward_depth = max(min_depth, int(depth_frac * plot_h))
+        iy0 = max(bbox.top, bbox.bottom - inward_depth)
+        iy1 = bbox.bottom  # exclusive — axis line row not included
+        inward = _band_peaks(iy0, iy1)
+
+    diag: Dict[str, object] = {
+        "x_tick_candidates_outward": len(outward),
+        "x_tick_candidates_inward": len(inward),
+    }
+    return outward, inward, diag
 
 
 def detect_y_tick_positions(
     dark: np.ndarray,
     bbox: AxisFrame,
-) -> List[float]:
+    *,
+    config: Optional[CalibrationConfig] = None,
+) -> Tuple[List[float], List[float], Dict[str, object]]:
+    """Detect y-axis tick positions from outward (left) and inward (right) bands.
+
+    Returns (outward_positions, inward_positions, diagnostics_dict).
+    Pipeline uses these separately to try outward first, then inward, then merged.
+    """
     h, w = dark.shape[:2]
-    x0 = max(0, bbox.left - max(10, int(0.025 * w)))
-    x1 = min(w, bbox.left + 1)
-    y0 = max(0, bbox.top)
-    y1 = min(h, bbox.bottom + 1)
-    band = dark[y0:y1, x0:x1]
-    if band.size == 0:
-        return []
-    proj = band.sum(axis=1).astype(float)
-    signal = np.maximum(0, proj - np.percentile(proj, 55))
+    by0 = max(0, bbox.top)
+    by1 = min(h, bbox.bottom + 1)
     min_dist = max(8, int((bbox.bottom - bbox.top) * 0.025))
-    height_thresh = max(1.0, np.max(signal) * 0.25) if np.max(signal) > 0 else 1.0
-    peaks, _ = find_peaks(signal, height=height_thresh, distance=min_dist)
-    return [float(y0 + p) for p in peaks if bbox.top - 5 <= y0 + p <= bbox.bottom + 5]
+
+    def _band_peaks(x0: int, x1: int) -> List[float]:
+        band = dark[by0:by1, x0:x1]
+        if band.size == 0:
+            return []
+        proj = band.sum(axis=1).astype(float)
+        signal = np.maximum(0, proj - np.percentile(proj, 55))
+        height_thresh = max(1.0, np.max(signal) * 0.25) if np.max(signal) > 0 else 1.0
+        peaks, _ = find_peaks(signal, height=height_thresh, distance=min_dist)
+        return [float(by0 + p) for p in peaks if bbox.top - 5 <= by0 + p <= bbox.bottom + 5]
+
+    # Outward band: left of the y-axis line
+    outward_depth = max(10, int(0.025 * w))
+    outward = _band_peaks(max(0, bbox.left - outward_depth), min(w, bbox.left + 1))
+
+    # Inward band: right of the y-axis line (into the plot interior)
+    detect_inward = config is None or getattr(config, "detect_inward_ticks", True)
+    inward: List[float] = []
+    if detect_inward:
+        depth_frac = getattr(config, "inward_tick_depth_frac", 0.025) if config else 0.025
+        min_depth = getattr(config, "inward_tick_min_depth_px", 10) if config else 10
+        plot_w = max(1, bbox.right - bbox.left)
+        inward_depth = max(min_depth, int(depth_frac * plot_w))
+        ix0 = bbox.left
+        ix1 = min(bbox.right, bbox.left + inward_depth)
+        inward = _band_peaks(ix0, ix1)
+
+    diag: Dict[str, object] = {
+        "y_tick_candidates_outward": len(outward),
+        "y_tick_candidates_inward": len(inward),
+    }
+    return outward, inward, diag
