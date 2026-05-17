@@ -350,6 +350,194 @@ def crop_band(
 
 
 # ----------------------------------------------------------------------
+# Log-10 concatenation correction
+# ----------------------------------------------------------------------
+
+def deconcat_log10_labels(records: List[OCRRecord]) -> List[OCRRecord]:
+    """Correct values where EasyOCR merged a superscript exponent into the base.
+
+    On log-scale plots, tick labels like "10^0" are often rendered without any
+    caret glyph — the exponent is a raised superscript.  EasyOCR then reads the
+    base "10" and its superscript as one string: "100" for 10^0, "101" for 10^1,
+    "1010" for 10^10, "1020" for 10^20, etc.
+
+    This function detects the axis-level pattern and applies the log-10
+    interpretation.  Guard conditions (all must hold):
+      • ≥ 2 candidate records match r"^10\\d{1,2}$"
+      • candidates represent ≥ 75% of all numeric records on the axis
+      • the decoded 10^N values span at least one order of magnitude (10× range)
+    """
+    _pat = re.compile(r"^10(\d{1,2})$")
+    candidates: List[Tuple[int, int]] = []
+    for i, r in enumerate(records):
+        if r.value is None or not r.cleaned_text:
+            continue
+        m = _pat.fullmatch(r.cleaned_text)
+        if m:
+            exp = int(m.group(1))
+            if 0 <= exp <= 40:
+                candidates.append((i, exp))
+
+    if len(candidates) < 2:
+        return records
+
+    numeric_count = sum(1 for r in records if r.value is not None)
+    if numeric_count > 0 and len(candidates) / numeric_count < 0.75:
+        return records
+
+    decoded = [10 ** exp for _, exp in candidates]
+    if max(decoded) / min(decoded) < 10.0:
+        return records
+
+    result = list(records)
+    for i, exp in candidates:
+        r = records[i]
+        result[i] = OCRRecord(
+            raw_text=r.raw_text,
+            cleaned_text=f"10^{exp}",
+            value=float(10 ** exp),
+            is_numeric=True,
+            confidence=r.confidence,
+            bbox=r.bbox,
+            center=r.center,
+            parse_status="deconcat_log10",
+            parse_flag=f"deconcat:{r.cleaned_text}→10^{exp}",
+            phase=r.phase,
+        )
+    return result
+
+
+# ----------------------------------------------------------------------
+# Superscript fragment merging
+# ----------------------------------------------------------------------
+
+def merge_superscript_fragments(
+    records: List[OCRRecord],
+    *,
+    max_x_sep: float = 55.0,
+    max_y_sep: float = 18.0,
+) -> List[OCRRecord]:
+    """Merge fragmented power-of-ten tick labels into single records.
+
+    EasyOCR sometimes detects a log-scale label like "10^20" or "1×10^-7" as
+    two separate text regions: the base ("10" or "1×10") and the superscript
+    exponent ("20" or "-7").  This function re-joins them so the pairing step
+    receives a single record with the correct value.
+
+    Two merge patterns are recognised:
+      • pow10: base.cleaned_text == "10" (value=10.0) + integer exponent
+               → merged value = 10 ** exponent
+      • sci:   base.value is None and base.cleaned_text ends in "e"
+               (e.g. "1e" from "1×10" with × stripped) + signed integer
+               → merged value = float("1e±N")
+
+    Spatial criteria for the exponent fragment:
+      • x-centre within [−8, max_x_sep] px of the base (typically to the right)
+      • vertical separation ≤ max_y_sep px (superscript sits close to the base)
+    """
+    _int_re = re.compile(r"^[+-]?\d{1,3}$")
+
+    base_cands: List[Tuple[int, str]] = []
+    for i, r in enumerate(records):
+        if r.value == 10.0 and r.cleaned_text == "10":
+            base_cands.append((i, "pow10"))
+        elif (r.value is None
+              and r.cleaned_text
+              and r.cleaned_text.lower().rstrip("0123456789+-").endswith("e")):
+            base_cands.append((i, "sci"))
+
+    exp_cands: set = {
+        i for i, r in enumerate(records)
+        if r.value is not None
+        and r.cleaned_text is not None
+        and _int_re.match(r.cleaned_text)
+        and r.cleaned_text.lstrip("+-") != "10"
+    }
+
+    used: set = set()
+    pairs: List[Tuple[int, int, OCRRecord]] = []
+
+    for base_idx, kind in base_cands:
+        if base_idx in used:
+            continue
+        base = records[base_idx]
+        best_ei: Optional[int] = None
+        best_dist = float("inf")
+
+        for ei in exp_cands:
+            if ei in used:
+                continue
+            exp = records[ei]
+            dx = exp.center[0] - base.center[0]
+            dy = base.center[1] - exp.center[1]  # positive → exp is above base
+            if dx < -8.0 or dx > max_x_sep:
+                continue
+            if abs(dy) > max_y_sep:
+                continue
+            if kind == "pow10" and exp.value == 10.0:
+                exp_h = exp.bbox[3] - exp.bbox[1]
+                base_h = base.bbox[3] - base.bbox[1]
+                if base_h > 0 and exp_h >= base_h * 0.85:
+                    continue
+            dist = (dx ** 2 + dy ** 2) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_ei = ei
+
+        if best_ei is None:
+            continue
+
+        exp_rec = records[best_ei]
+        exp_int = int(round(float(exp_rec.value)))
+
+        if kind == "pow10":
+            merged_value = float(10 ** exp_int)
+            merged_text = f"10^{exp_rec.cleaned_text}"
+        else:
+            e_pos = base.cleaned_text.lower().rfind("e")
+            if e_pos < 0:
+                continue
+            sci_str = base.cleaned_text[: e_pos + 1] + exp_rec.cleaned_text
+            try:
+                merged_value = float(sci_str)
+            except ValueError:
+                continue
+            merged_text = sci_str
+
+        x0 = min(base.bbox[0], exp_rec.bbox[0])
+        y0 = min(base.bbox[1], exp_rec.bbox[1])
+        x1 = max(base.bbox[2], exp_rec.bbox[2])
+        y1 = max(base.bbox[3], exp_rec.bbox[3])
+        merged_rec = OCRRecord(
+            raw_text=merged_text,
+            cleaned_text=merged_text,
+            value=merged_value,
+            is_numeric=True,
+            confidence=min(base.confidence, exp_rec.confidence),
+            bbox=(x0, y0, x1, y1),
+            center=((x0 + x1) / 2.0, (y0 + y1) / 2.0),
+            parse_status="merged_superscript",
+            parse_flag=f"merged:{base.raw_text!r}+{exp_rec.raw_text!r}",
+            phase=base.phase,
+        )
+        pairs.append((base_idx, best_ei, merged_rec))
+        used.add(base_idx)
+        used.add(best_ei)
+
+    if not pairs:
+        return records
+
+    merged_at = {bi: mrec for bi, _, mrec in pairs}
+    exp_used = {ei for _, ei, _ in pairs}
+    result: List[OCRRecord] = []
+    for i, r in enumerate(records):
+        if i in exp_used:
+            continue
+        result.append(merged_at[i] if i in merged_at else r)
+    return result
+
+
+# ----------------------------------------------------------------------
 # Band geometry helpers
 # ----------------------------------------------------------------------
 

@@ -268,12 +268,26 @@ def run_calibration(
     # suppress full-phase (Phase A) records from pairing so stray detections
     # (e.g. a "2" misread from a "2e+90" label in the full image scan) cannot
     # displace or corrupt the band-scan calibration.
-    _y_band_count = sum(1 for r in y_label_records if r.phase == OCRPhase.Y_BAND.value)
-    if _y_band_count >= cfg.grid_min_ticks:
-        y_label_records = [r for r in y_label_records if r.phase == OCRPhase.Y_BAND.value]
-    _x_band_count = sum(1 for r in x_label_records if r.phase == OCRPhase.X_BAND.value)
-    if _x_band_count >= cfg.grid_min_ticks:
-        x_label_records = [r for r in x_label_records if r.phase == OCRPhase.X_BAND.value]
+    # Guard: if band records have < 2 distinct numeric values (EasyOCR only
+    # read the base "10" without exponents on log-scale labels), they are
+    # degenerate and cannot calibrate the axis — fall back to Phase A records.
+    _y_band_recs = [r for r in y_label_records if r.phase == OCRPhase.Y_BAND.value]
+    _y_band_distinct = len({r.value for r in _y_band_recs if r.value is not None})
+    if len(_y_band_recs) >= cfg.grid_min_ticks and _y_band_distinct >= 2:
+        y_label_records = _y_band_recs
+    _x_band_recs = [r for r in x_label_records if r.phase == OCRPhase.X_BAND.value]
+    _x_band_distinct = len({r.value for r in _x_band_recs if r.value is not None})
+    if len(_x_band_recs) >= cfg.grid_min_ticks and _x_band_distinct >= 2:
+        x_label_records = _x_band_recs
+
+    # Fix log-scale label OCR failures before pairing.
+    # Pass 1: re-join split records ("10" + "N" → "10^N").
+    # Pass 2: correct concatenated reads ("100" → 10^0, "1010" → 10^10) when
+    #          most labels on the axis match the "10\d{1,2}" pattern.
+    y_label_records = ocr_mod.merge_superscript_fragments(y_label_records)
+    y_label_records = ocr_mod.deconcat_log10_labels(y_label_records)
+    x_label_records = ocr_mod.merge_superscript_fragments(x_label_records)
+    x_label_records = ocr_mod.deconcat_log10_labels(x_label_records)
 
     diagnostics["x_label_candidates"] = len(x_label_records)
     diagnostics["y_label_candidates"] = len(y_label_records)
@@ -591,7 +605,7 @@ def _run_rotated_band_ocr(
         rotated,
         gpu=cfg.use_gpu,
         min_confidence=cfg.min_ocr_confidence,
-        allowlist="0123456789.+-eE^",
+        allowlist="0123456789.+-eE^x",
         phase=phase_name,
         bbox_offset=(0, 0),
         upsample=cfg.band_upsample,

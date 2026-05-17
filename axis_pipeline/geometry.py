@@ -69,6 +69,26 @@ def _longest_run(mask_1d: np.ndarray) -> Tuple[int, int, int]:
     return int(starts[i]), int(ends[i]), int(lens[i])
 
 
+def _covered_span(mask_1d: np.ndarray, min_coverage: float = 0.35) -> Tuple[int, int, int]:
+    """Return (start, end, span) using full first-to-last dark pixel extent.
+
+    When text masking creates multiple gaps in an axis line the longest
+    continuous run can fall below the minimum-length threshold even though the
+    axis is clearly present.  If at least `min_coverage` fraction of the
+    first-to-last span is dark we report the full span rather than the longest
+    continuous run, so masking gaps do not hide the axis.
+    """
+    if mask_1d.size == 0 or not np.any(mask_1d):
+        return 0, 0, 0
+    dark_idx = np.where(mask_1d.astype(bool))[0]
+    start, end = int(dark_idx[0]), int(dark_idx[-1])
+    span = end - start + 1
+    coverage = len(dark_idx) / span if span > 0 else 0.0
+    if coverage >= min_coverage:
+        return start, end, span
+    return _longest_run(mask_1d)
+
+
 def _group_runs(indices: np.ndarray) -> List[np.ndarray]:
     if indices.size == 0:
         return []
@@ -101,7 +121,7 @@ def _projection_candidates(dark: np.ndarray) -> Tuple[List[_AxisCandidate], List
     for grp in _group_runs(np.flatnonzero(rowc >= row_thr)):
         rep = int(grp[np.argmax(rowc[grp])])
         band = dark[max(0, rep - 1): min(h, rep + 2), :].sum(axis=0) > 0
-        x0, x1, length = _longest_run(band)
+        x0, x1, length = _covered_span(band)
         if length >= 0.20 * w:
             horizontal.append(_AxisCandidate("h", rep, x0, x1, length,
                                              float(rowc[rep]), "projection"))
@@ -110,7 +130,7 @@ def _projection_candidates(dark: np.ndarray) -> Tuple[List[_AxisCandidate], List
     for grp in _group_runs(np.flatnonzero(colc >= col_thr)):
         rep = int(grp[np.argmax(colc[grp])])
         band = dark[:, max(0, rep - 1): min(w, rep + 2)].sum(axis=1) > 0
-        y0, y1, length = _longest_run(band)
+        y0, y1, length = _covered_span(band)
         if length >= 0.20 * h:
             vertical.append(_AxisCandidate("v", rep, y0, y1, length,
                                            float(colc[rep]), "projection"))
