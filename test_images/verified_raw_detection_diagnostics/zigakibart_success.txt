@@ -1,0 +1,552 @@
+{
+  "success": true,
+  "confidence": 0.9198136612898167,
+  "mode": "ocr_masked_open_axes",
+  "bbox": [
+    209,
+    222,
+    949,
+    524
+  ],
+  "p1": [
+    316,
+    483
+  ],
+  "p2": [
+    945,
+    483
+  ],
+  "p3": [
+    316,
+    259
+  ],
+  "p1_data_x": 0,
+  "p2_data_x": 120,
+  "p3_data_x": -0.027224691526683387,
+  "p1_data_y": -70,
+  "p3_data_y": -10,
+  "x_ticks": [
+    [
+      316,
+      524,
+      1
+    ],
+    [
+      421,
+      524,
+      1
+    ],
+    [
+      526,
+      524,
+      1
+    ],
+    [
+      630,
+      524,
+      1
+    ],
+    [
+      735,
+      524,
+      1
+    ],
+    [
+      840,
+      524,
+      1
+    ],
+    [
+      945,
+      524,
+      1
+    ]
+  ],
+  "y_ticks": [
+    [
+      209,
+      259,
+      1
+    ],
+    [
+      209,
+      297,
+      1
+    ],
+    [
+      209,
+      334,
+      1
+    ],
+    [
+      209,
+      371,
+      1
+    ],
+    [
+      209,
+      409,
+      1
+    ],
+    [
+      209,
+      446,
+      1
+    ],
+    [
+      209,
+      483,
+      1
+    ],
+    [
+      209,
+      520,
+      1
+    ]
+  ],
+  "x_tick_table": [
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "0",
+      "cleaned_text": "0",
+      "value": 0,
+      "pixel_position": 316,
+      "fixed_axis_pixel": 524,
+      "ocr_confidence": 0.9997137989764759,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        304,
+        521,
+        331,
+        563
+      ],
+      "grid_index": 0
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "20",
+      "cleaned_text": "20",
+      "value": 20,
+      "pixel_position": 421,
+      "fixed_axis_pixel": 524,
+      "ocr_confidence": 0.9999994942378553,
+      "pair_distance_px": 2.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        407,
+        537,
+        440,
+        562
+      ],
+      "grid_index": 1
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "40",
+      "cleaned_text": "40",
+      "value": 40,
+      "pixel_position": 526,
+      "fixed_axis_pixel": 524,
+      "ocr_confidence": 0.9999998314126102,
+      "pair_distance_px": 1,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        510,
+        537,
+        544,
+        562
+      ],
+      "grid_index": 2
+    },
+    {
+      "include": false,
+      "axis": "x",
+      "raw_text": "60",
+      "cleaned_text": "60",
+      "value": 60,
+      "pixel_position": 630,
+      "fixed_axis_pixel": 524,
+      "ocr_confidence": 0.9999993256504904,
+      "pair_distance_px": 3,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        616,
+        536,
+        650,
+        562
+      ],
+      "grid_index": 3
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "80",
+      "cleaned_text": "80",
+      "value": 80,
+      "pixel_position": 735,
+      "fixed_axis_pixel": 524,
+      "ocr_confidence": 1,
+      "pair_distance_px": 1,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        719,
+        539,
+        753,
+        562
+      ],
+      "grid_index": 4
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "100",
+      "cleaned_text": "100",
+      "value": 100,
+      "pixel_position": 840,
+      "fixed_axis_pixel": 524,
+      "ocr_confidence": 0.9999977287583369,
+      "pair_distance_px": 3,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        820,
+        537,
+        866,
+        562
+      ],
+      "grid_index": 5
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "120",
+      "cleaned_text": "120",
+      "value": 120,
+      "pixel_position": 945,
+      "fixed_axis_pixel": 524,
+      "ocr_confidence": 0.9999999311744849,
+      "pair_distance_px": 2,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        925,
+        536,
+        969,
+        562
+      ],
+      "grid_index": 6
+    }
+  ],
+  "y_tick_table": [
+    {
+      "include": true,
+      "axis": "y",
+      "raw_text": "-10",
+      "cleaned_text": "-10",
+      "value": -10,
+      "pixel_position": 259,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.9982808828353882,
+      "pair_distance_px": 1,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        133,
+        245,
+        175,
+        271
+      ],
+      "grid_index": 0
+    },
+    {
+      "include": false,
+      "axis": "y",
+      "raw_text": "-20",
+      "cleaned_text": "-20",
+      "value": -20,
+      "pixel_position": 297,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.8459233337004254,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        133,
+        283,
+        174,
+        308
+      ],
+      "grid_index": 1
+    },
+    {
+      "include": false,
+      "axis": "y",
+      "raw_text": "30",
+      "cleaned_text": "30",
+      "value": 30,
+      "pixel_position": 334,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.5123303275977212,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "monotonicity_violation",
+      "flag": "",
+      "bbox": [
+        133,
+        320,
+        174,
+        345
+      ],
+      "grid_index": 2
+    },
+    {
+      "include": true,
+      "axis": "y",
+      "raw_text": "-40",
+      "cleaned_text": "-40",
+      "value": -40,
+      "pixel_position": 371,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.9991119972151404,
+      "pair_distance_px": 1,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        133,
+        357,
+        174,
+        383
+      ],
+      "grid_index": 3
+    },
+    {
+      "include": false,
+      "axis": "y",
+      "raw_text": "550",
+      "cleaned_text": "550",
+      "value": 550,
+      "pixel_position": 409,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.6302667856216431,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "monotonicity_violation",
+      "flag": "",
+      "bbox": [
+        133,
+        394,
+        175,
+        421
+      ],
+      "grid_index": 4
+    },
+    {
+      "include": false,
+      "axis": "y",
+      "raw_text": "-60",
+      "cleaned_text": "-60",
+      "value": -60,
+      "pixel_position": 446,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.6215583086013794,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        133,
+        432,
+        174,
+        457
+      ],
+      "grid_index": 5
+    },
+    {
+      "include": true,
+      "axis": "y",
+      "raw_text": "-70",
+      "cleaned_text": "-70",
+      "value": -70,
+      "pixel_position": 483,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.7392420768737793,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        133,
+        469,
+        175,
+        494
+      ],
+      "grid_index": 6
+    },
+    {
+      "include": false,
+      "axis": "y",
+      "raw_text": "-80",
+      "cleaned_text": "-80",
+      "value": -80,
+      "pixel_position": 520,
+      "fixed_axis_pixel": 209,
+      "ocr_confidence": 0.9983794039762744,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        133,
+        506,
+        174,
+        531
+      ],
+      "grid_index": 7
+    }
+  ],
+  "x_grid_fit": {
+    "spacing": 105,
+    "origin": 315.42857142857144,
+    "fitted_positions": [
+      316,
+      421,
+      526,
+      630,
+      735,
+      840,
+      945
+    ],
+    "fitted_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "rejected_positions": [],
+    "grid_residuals": [
+      0.5714285714285552,
+      0.5714285714285552,
+      0.5714285714285552,
+      -0.4285714285714448,
+      -0.4285714285714448,
+      -0.4285714285714448,
+      -0.4285714285714448
+    ],
+    "n_grid_cells": 7,
+    "success": true
+  },
+  "y_grid_fit": {
+    "spacing": 37,
+    "origin": 260.375,
+    "fitted_positions": [
+      259,
+      297,
+      334,
+      371,
+      409,
+      446,
+      483,
+      520
+    ],
+    "fitted_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "rejected_positions": [],
+    "grid_residuals": [
+      -1.375,
+      -0.375,
+      -0.375,
+      -0.375,
+      0.625,
+      0.625,
+      0.625,
+      0.625
+    ],
+    "n_grid_cells": 8,
+    "success": true
+  },
+  "x_calibration": {
+    "scale": 0.19086557930533127,
+    "offset": -60.34074775201137,
+    "n_points": 6,
+    "method": "ols",
+    "rmse_px": 0.18898230236465377,
+    "rmse_data": 0.03607021661928492,
+    "log_likelihood": null,
+    "slope_se": 0.00007967336038372099,
+    "offset_se": 0.05337345112545335,
+    "df_t": null,
+    "log_base": null
+  },
+  "y_calibration": {
+    "scale": -0.26785714285714285,
+    "offset": 59.375,
+    "n_points": 3,
+    "method": "ols",
+    "rmse_px": 0,
+    "rmse_data": 0,
+    "log_likelihood": null,
+    "slope_se": 0,
+    "offset_se": 0,
+    "df_t": null,
+    "log_base": null
+  },
+  "ocr_record_count": 30,
+  "ocr_enabled": true,
+  "warnings": [
+    "Right plot border not confidently detected; using x-axis extent as the right edge."
+  ],
+  "diagnostics": {
+    "phase_a_record_count": 26,
+    "phase_a_oversized_filtered": 0,
+    "axis_confidence": 0.8221081081081081,
+    "y_band_extra_used": 90,
+    "phase_b_record_count": 10,
+    "x_band_extra_used": 36,
+    "phase_c_record_count": 9,
+    "combined_record_count": 30,
+    "x_tick_candidates_outward": 7,
+    "x_tick_candidates_inward": 1,
+    "y_tick_candidates_outward": 8,
+    "y_tick_candidates_inward": 0,
+    "x_label_candidates": 8,
+    "y_label_candidates": 10,
+    "x_tick_detection_mode": "outward",
+    "y_tick_detection_mode": "outward",
+    "x_tick_raw_count": 7,
+    "y_tick_raw_count": 8,
+    "x_grid_kept": 7,
+    "y_grid_kept": 8,
+    "x_grid_rejected": 0,
+    "y_grid_rejected": 0
+  }
+}

@@ -1,8 +1,12 @@
 """Backwards-compat shim. The real implementation lives in `axis_pipeline`.
 
-This module used to contain the entire geometry-only axis/tick detector.
-It is now a thin wrapper around the multi-phase pipeline package, preserving
-the public API the Streamlit app uses:
+DEPRECATED: This module re-exports dict-shaped legacy functions for the
+Streamlit app. New code should import from `axis_pipeline` (typed API).
+
+The Streamlit app silences the underlying `DeprecationWarning` so users do
+not see the migration noise; external scripts that import these symbols
+WILL see the warning (which is the intended signal).
+
     auto_detect_axes_and_ticks(img_bgr) -> dict
     build_diagnostic_overlay(img_bgr, detection) -> RGB image
 

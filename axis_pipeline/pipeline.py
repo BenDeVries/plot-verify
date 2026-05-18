@@ -28,6 +28,7 @@ the existing Streamlit app consumes.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Callable, List, Optional, Tuple
 
 import cv2
@@ -39,6 +40,7 @@ from . import pairing as pair_mod
 from .calibration import calibrate_axis
 from .gridfit import fit_linear_grid
 from .types import (
+    AxisCalibration,
     AxisFrame,
     CalibrationConfig,
     CalibrationResult,
@@ -50,6 +52,132 @@ from .types import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def ocr_available() -> bool:
+    """Return True if EasyOCR can be imported in the current environment.
+
+    Used by the UI to decide whether to enable auto-calibration controls.
+    Pure check — does not load any models, so it's cheap to call repeatedly.
+    """
+    try:
+        import easyocr  # noqa: F401
+        return True
+    except Exception:
+        # ImportError on missing package; other errors (e.g. CUDA misconfig
+        # raising on import in torch) also count as unavailable.
+        return False
+
+
+def manual_calibration(
+    *,
+    p1_pixel: Tuple[float, float],
+    p2_pixel: Tuple[float, float],
+    p3_pixel: Tuple[float, float],
+    p1_data_x: float,
+    p2_data_x: float,
+    p3_data_y: float,
+    p1_data_y: float = 0.0,
+    bbox: Optional[AxisFrame] = None,
+    x_log_base: Optional[float] = None,
+    y_log_base: Optional[float] = None,
+) -> CalibrationResult:
+    """Construct a CalibrationResult from user-supplied anchor points.
+
+    Does not invoke the OCR/geometry pipeline. Intended for the manual-only
+    workflow (no EasyOCR / no pytorch) and for users who want to override
+    auto-detection entirely. The returned result mirrors the same shape as
+    `run_calibration` so the rest of the app (overlay rendering, legacy dict
+    adapter, CSV export) is unaffected.
+
+    Pass ``x_log_base=10.0`` / ``y_log_base=10.0`` to fit in log space; data
+    values must be strictly positive when a log axis is requested.
+    """
+    p1_px_x, p1_px_y = float(p1_pixel[0]), float(p1_pixel[1])
+    p2_px_x, p2_px_y = float(p2_pixel[0]), float(p2_pixel[1])
+    p3_px_x, p3_px_y = float(p3_pixel[0]), float(p3_pixel[1])
+
+    def _fail(msg: str) -> CalibrationResult:
+        return CalibrationResult(
+            success=False, confidence=0.0, mode="manual_failed",
+            bbox=bbox,
+            x_calibration=None, y_calibration=None,
+            p1_pixel=p1_pixel, p2_pixel=p2_pixel, p3_pixel=p3_pixel,
+            p1_data_x=p1_data_x, p2_data_x=p2_data_x, p3_data_x=None,
+            p1_data_y=p1_data_y, p3_data_y=p3_data_y,
+            warnings=[msg],
+            diagnostics={"source": "manual"},
+            config=CalibrationConfig(),
+        )
+
+    if abs(p2_px_x - p1_px_x) < 1e-9:
+        return _fail("Manual calibration: P1 and P2 must differ in pixel X.")
+
+    # Transform data values to log space if requested.
+    def _t(value: float, log_base: Optional[float]) -> Optional[float]:
+        if not log_base or log_base == 1.0:
+            return float(value)
+        if log_base != 10.0:
+            return float(value)
+        v = float(value)
+        if v <= 0:
+            return None
+        return float(math.log10(v))
+
+    x_p1_t = _t(p1_data_x, x_log_base)
+    x_p2_t = _t(p2_data_x, x_log_base)
+    if x_p1_t is None or x_p2_t is None:
+        return _fail("Manual calibration: log10 X-axis requires positive data values.")
+
+    x_scale = (x_p2_t - x_p1_t) / (p2_px_x - p1_px_x)
+    x_offset = x_p1_t - x_scale * p1_px_x
+    if not math.isfinite(x_scale) or abs(x_scale) < 1e-12:
+        return _fail("Manual calibration: degenerate X-axis values.")
+
+    x_axis_pixel_y = (p1_px_y + p2_px_y) / 2.0
+    if abs(p3_px_y - x_axis_pixel_y) < 1e-9:
+        return _fail("Manual calibration: P3 must differ in pixel Y from the X-axis baseline.")
+
+    y_p3_t = _t(p3_data_y, y_log_base)
+    y_base_t = _t(p1_data_y, y_log_base)
+    if y_p3_t is None or y_base_t is None:
+        return _fail("Manual calibration: log10 Y-axis requires positive data values.")
+
+    y_scale = (y_p3_t - y_base_t) / (p3_px_y - x_axis_pixel_y)
+    y_offset = y_p3_t - y_scale * p3_px_y
+    if not math.isfinite(y_scale) or abs(y_scale) < 1e-12:
+        return _fail("Manual calibration: degenerate Y-axis values.")
+
+    x_cal = AxisCalibration(
+        scale=float(x_scale), offset=float(x_offset),
+        n_points=2, method="manual_two_point",
+        rmse_px=0.0, rmse_data=0.0,
+        log_base=float(x_log_base) if x_log_base else None,
+    )
+    y_cal = AxisCalibration(
+        scale=float(y_scale), offset=float(y_offset),
+        n_points=2, method="manual_two_point",
+        rmse_px=0.0, rmse_data=0.0,
+        log_base=float(y_log_base) if y_log_base else None,
+    )
+
+    # P3.data_x derived from the x-axis calibration.
+    p3_data_x = float(x_cal.pixel_to_data(p3_px_x))
+
+    return CalibrationResult(
+        success=True,
+        confidence=1.0,
+        mode="manual",
+        bbox=bbox,
+        x_calibration=x_cal,
+        y_calibration=y_cal,
+        p1_pixel=p1_pixel, p2_pixel=p2_pixel, p3_pixel=p3_pixel,
+        p1_data_x=float(p1_data_x), p2_data_x=float(p2_data_x), p3_data_x=p3_data_x,
+        p1_data_y=float(p1_data_y), p3_data_y=float(p3_data_y),
+        warnings=[],
+        diagnostics={"source": "manual"},
+        config=CalibrationConfig(),
+    )
 
 
 # Type alias: (image_bgr, allowlist, phase, bbox_offset, kwargs) -> records.

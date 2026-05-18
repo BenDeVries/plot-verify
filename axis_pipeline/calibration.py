@@ -6,8 +6,10 @@ For LOG10 axes:   fit  log10(data) = scale * pixel + offset  (OLS on log-space).
 OLS (ordinary least squares) is used throughout. A greedy search removes one
 point at a time while rmse improves, stopping when no removal helps or only 3
 points remain. All candidate sets are collected. The 1-SE rule then selects
-the candidate with the most points whose rmse < min(rmse) + SE (where SE is
-floored by the initial full-set RSE to prevent degenerate collapse).
+the candidate with the most points whose rmse ≤ min(rmse) + SE, where SE is
+the residual standard error of the min-rmse candidate. (The initial set's
+RSE is never used as a floor — that would let a single bad tick inflate the
+threshold past the point at which it could exclude itself.)
 
 Log-scale auto-detection: if all included values are positive and span ≥ 2
 orders of magnitude, the axis is treated as log10. The returned AxisCalibration
@@ -124,7 +126,6 @@ def calibrate_axis(
 
     active = list(inc)
     candidates = [_make_candidate(active, value_transform=vt)]
-    initial_rse = candidates[0][2]   # RSE of the full initial set
 
     while len(active) > 3:
         pixels = np.array([t.pixel_position for t in active], dtype=float)
@@ -153,14 +154,20 @@ def calibrate_axis(
         active.pop(best_idx)
         candidates.append(_make_candidate(active, value_transform=vt))
 
-    # 1-SE rule: locate the minimum-rmse candidate and its SE
+    # 1-SE rule: locate the minimum-rmse candidate and its SE, then admit
+    # any candidate whose rmse_data is within 1 SE of that minimum.
+    #
+    # We deliberately do NOT floor `se_at_min` with the initial (full-set) RSE.
+    # Doing so allows a single bad tick to inflate the threshold by the amount
+    # the rule is supposed to detect, defeating the whole point of the rule.
+    # If the min-rmse candidate has rmse_data ≈ 0 (e.g. three perfectly
+    # collinear points), that is a feature, not a degenerate case: continuous
+    # pixel/value coordinates being exactly collinear strongly implies those
+    # three measurements are correct, so the resulting tiny threshold should
+    # exclude the other (worse-fitting) candidates.
     min_i = min(range(len(candidates)), key=lambda i: candidates[i][1].rmse_data)
     min_rmse = candidates[min_i][1].rmse_data
     se_at_min = candidates[min_i][2]
-    # Floor the SE with the initial full-set RSE so that a coincidentally-perfect
-    # subset (e.g. 3 equally-spaced points → rmse=0, SE=0) doesn't collapse the
-    # threshold to zero and exclude larger sets with small but non-zero RMSE.
-    se_at_min = max(se_at_min, initial_rse)
     threshold = min_rmse + se_at_min
 
     # Use <= with a small epsilon so the min-rmse candidate is always included

@@ -1,0 +1,421 @@
+{
+  "success": false,
+  "confidence": 0,
+  "mode": "ocr_masked_boxed",
+  "bbox": [
+    96,
+    49,
+    430,
+    286
+  ],
+  "p1": [
+    281,
+    233
+  ],
+  "p2": [
+    356,
+    233
+  ],
+  "p3": [
+    281,
+    233
+  ],
+  "p1_data_x": 2,
+  "p2_data_x": 6,
+  "p3_data_x": 2,
+  "p1_data_y": 103,
+  "p3_data_y": 103,
+  "x_ticks": [
+    [
+      133,
+      286,
+      1
+    ],
+    [
+      170,
+      286,
+      1
+    ],
+    [
+      207,
+      286,
+      1
+    ],
+    [
+      244,
+      286,
+      1
+    ],
+    [
+      281,
+      286,
+      1
+    ],
+    [
+      319,
+      286,
+      1
+    ],
+    [
+      356,
+      286,
+      1
+    ],
+    [
+      393,
+      286,
+      1
+    ]
+  ],
+  "y_ticks": [
+    [
+      96,
+      52,
+      1
+    ],
+    [
+      96,
+      60,
+      1
+    ],
+    [
+      96,
+      94,
+      1
+    ],
+    [
+      96,
+      102,
+      1
+    ],
+    [
+      96,
+      115,
+      1
+    ],
+    [
+      96,
+      128,
+      1
+    ],
+    [
+      96,
+      136,
+      1
+    ],
+    [
+      96,
+      146,
+      1
+    ],
+    [
+      96,
+      154,
+      1
+    ],
+    [
+      96,
+      165,
+      1
+    ],
+    [
+      96,
+      173,
+      1
+    ],
+    [
+      96,
+      181,
+      1
+    ],
+    [
+      96,
+      195,
+      1
+    ],
+    [
+      96,
+      207,
+      1
+    ],
+    [
+      96,
+      221,
+      1
+    ],
+    [
+      96,
+      233,
+      1
+    ],
+    [
+      96,
+      244,
+      1
+    ],
+    [
+      96,
+      252,
+      1
+    ],
+    [
+      96,
+      260,
+      1
+    ],
+    [
+      96,
+      268,
+      1
+    ],
+    [
+      96,
+      278,
+      1
+    ]
+  ],
+  "x_tick_table": [
+    {
+      "include": false,
+      "axis": "x",
+      "raw_text": "53",
+      "cleaned_text": "53",
+      "value": 53,
+      "pixel_position": 133,
+      "fixed_axis_pixel": 286,
+      "ocr_confidence": 0.12413990564266925,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "monotonicity_violation",
+      "flag": "",
+      "bbox": [
+        122,
+        293,
+        141,
+        306
+      ],
+      "grid_index": 0
+    },
+    {
+      "include": false,
+      "axis": "x",
+      "raw_text": "20",
+      "cleaned_text": "20",
+      "value": 20,
+      "pixel_position": 207,
+      "fixed_axis_pixel": 286,
+      "ocr_confidence": 0.42572954130452245,
+      "pair_distance_px": 0.5,
+      "parse_status": "parsed",
+      "status": "monotonicity_violation",
+      "flag": "",
+      "bbox": [
+        196,
+        292,
+        217,
+        306
+      ],
+      "grid_index": 2
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "2",
+      "cleaned_text": "2",
+      "value": 2,
+      "pixel_position": 281,
+      "fixed_axis_pixel": 286,
+      "ocr_confidence": 0.3232362144772196,
+      "pair_distance_px": 1,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        270,
+        292,
+        290,
+        306
+      ],
+      "grid_index": 4
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "6",
+      "cleaned_text": "6",
+      "value": 6,
+      "pixel_position": 356,
+      "fixed_axis_pixel": 286,
+      "ocr_confidence": 0.19317581444359266,
+      "pair_distance_px": 1,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        345,
+        292,
+        365,
+        307
+      ],
+      "grid_index": 6
+    }
+  ],
+  "y_tick_table": [
+    {
+      "include": true,
+      "axis": "y",
+      "raw_text": "103",
+      "cleaned_text": "103",
+      "value": 103,
+      "pixel_position": 233,
+      "fixed_axis_pixel": 96,
+      "ocr_confidence": 0.2535965031407691,
+      "pair_distance_px": 0.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        61,
+        223,
+        90,
+        244
+      ],
+      "grid_index": 18
+    }
+  ],
+  "x_grid_fit": {
+    "spacing": 37,
+    "origin": 133.375,
+    "fitted_positions": [
+      133,
+      170,
+      207,
+      244,
+      281,
+      319,
+      356,
+      393
+    ],
+    "fitted_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "rejected_positions": [],
+    "grid_residuals": [
+      -0.375,
+      -0.375,
+      -0.375,
+      -0.375,
+      -0.375,
+      0.625,
+      0.625,
+      0.625
+    ],
+    "n_grid_cells": 8,
+    "success": true
+  },
+  "y_grid_fit": {
+    "spacing": 10,
+    "origin": 52.166666666666664,
+    "fitted_positions": [
+      52,
+      94,
+      102,
+      154,
+      173,
+      181,
+      221,
+      233,
+      244,
+      252
+    ],
+    "fitted_indices": [
+      0,
+      4,
+      5,
+      10,
+      12,
+      13,
+      17,
+      18,
+      19,
+      20
+    ],
+    "rejected_positions": [
+      60,
+      115,
+      128,
+      136,
+      146,
+      165,
+      195,
+      207,
+      260,
+      268,
+      278
+    ],
+    "grid_residuals": [
+      -0.1666666666666643,
+      1.8333333333333428,
+      -0.1666666666666572,
+      1.8333333333333428,
+      0.8333333333333428,
+      -1.1666666666666572,
+      -1.1666666666666572,
+      0.8333333333333428,
+      1.8333333333333428,
+      -0.1666666666666572
+    ],
+    "n_grid_cells": 21,
+    "success": true
+  },
+  "x_calibration": {
+    "scale": 0.05333333333333334,
+    "offset": -12.986666666666668,
+    "n_points": 2,
+    "method": "two_point",
+    "rmse_px": 0,
+    "rmse_data": 0,
+    "log_likelihood": null,
+    "slope_se": null,
+    "offset_se": null,
+    "df_t": null,
+    "log_base": null
+  },
+  "y_calibration": null,
+  "ocr_record_count": 20,
+  "ocr_enabled": true,
+  "warnings": [
+    "Y-axis calibration refused: only 1 label(s) paired (value: 103.0). At least 2 distinct labels are needed. The OCR backend may have missed labels — check the diagnostic overlay; if labels are visible but unread, lower `band_text_threshold` or `band_min_size` in CalibrationConfig."
+  ],
+  "diagnostics": {
+    "phase_a_record_count": 12,
+    "phase_a_oversized_filtered": 0,
+    "axis_confidence": 0.98,
+    "y_band_extra_used": 46,
+    "phase_b_record_count": 2,
+    "x_band_extra_used": 28,
+    "phase_c_record_count": 8,
+    "combined_record_count": 20,
+    "x_tick_candidates_outward": 8,
+    "x_tick_candidates_inward": 0,
+    "y_tick_candidates_outward": 21,
+    "y_tick_candidates_inward": 0,
+    "x_label_candidates": 4,
+    "y_label_candidates": 3,
+    "x_tick_detection_mode": "outward",
+    "y_tick_detection_mode": "outward",
+    "x_tick_raw_count": 8,
+    "y_tick_raw_count": 21,
+    "x_grid_kept": 8,
+    "y_grid_kept": 10,
+    "x_grid_rejected": 0,
+    "y_grid_rejected": 11
+  }
+}
