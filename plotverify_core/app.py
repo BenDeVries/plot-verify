@@ -10,27 +10,20 @@ NOT import streamlit or shiny.
 """
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
-
-import numpy as np
+from typing import Callable, Dict, List, Optional
 
 from axis_pipeline import (
     CalibrationConfig,
     CalibrationResult,
-    detect_axis_frame,
     manual_calibration,
     ocr_available,
     run_calibration,
 )
-from axis_pipeline.legacy import (
-    rebuild_result_from_detection,
-    update_result_from_tick_edits,
-)
+from axis_pipeline.legacy import update_result_from_tick_edits
 
 from .csv_io import load_csv
-from .image_io import decode_and_maybe_downscale, hash_bytes
+from .image_io import decode_and_maybe_downscale
 from .matching import FileEntry, MatchResult, make_file_entry, match_files
 from .overlay_model import EditableOverlay
 from .series_state import init_series_states
@@ -40,7 +33,6 @@ from .session import (
     MaskingChoice,
     PerFileState,
     ReviewStatus,
-    WorkflowStage,
 )
 
 

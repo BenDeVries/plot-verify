@@ -1,7 +1,9 @@
-"""Pin down current axis_pipeline behavior for refactors B/D.
+"""Coverage for the typed axis_pipeline surface that doesn't need EasyOCR.
 
-These tests do not depend on EasyOCR (they use a stub OCR runner) so they run
-in any environment. They lock in the typed API surface of `axis_pipeline`.
+Tests parse_numeric_tick string parsing, manual_calibration edge cases
+(degenerate P1=P2, log10 rejects zero), and to_legacy_dict shape. These
+complement test_typed_tick_edits (which uses manual_calibration only as a
+fixture) and test_real_image_regression (which exercises the full pipeline).
 """
 import numpy as np
 import pytest

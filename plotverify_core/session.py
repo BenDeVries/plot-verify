@@ -93,11 +93,6 @@ class PerFileState:
 
     export_filename: Optional[str] = None
 
-    # Frame-preview cache key & value (replaces the global cache in the
-    # current Streamlit app).
-    frame_preview_key: Optional[tuple] = None
-    frame_preview: Any = None         # FramePreview
-
     def is_calibrated(self) -> bool:
         return bool(self.calibration.get("applied"))
 

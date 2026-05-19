@@ -21,9 +21,8 @@ The serialization helpers `rebuild_result_from_detection` and
 from __future__ import annotations
 
 import warnings
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-import numpy as np
 import pandas as pd
 
 from .calibration import calibrate_axis

@@ -40,6 +40,19 @@ The 6 xfailed cases in `tests/test_real_image_regression.py` split into two dist
 
 Each `pytest.mark.xfail(strict=True)` will fail loudly if the case starts passing, so a fix will surface immediately and prompt removal of the marker.
 
+### Band-Override Capture Protocol (Do Not Simplify)
+
+The diagnostics in `test_images/verified_raw_detection_diagnostics/*.txt` were captured with **per-image** custom y/x band extras (e.g. `case3` = (130, 64); `iga_sc_povetacicept` = (140, 55)). Those values are stored inside each diagnostic under `diagnostics.y_band_extra_used` / `diagnostics.x_band_extra_used` and replayed by `tests/test_real_image_regression.py:130-135`:
+
+```python
+cfg = CalibrationConfig(
+    y_band_extra_px=int(used.get("y_band_extra_used", 90)),
+    x_band_extra_px=int(used.get("x_band_extra_used", 28)),
+)
+```
+
+This is the regression protocol — do **not** rewrite the test to use only `CalibrationConfig()` defaults, and do **not** drop the `y_band_extra_used`/`x_band_extra_used` keys when re-baselining a diagnostic. The (90, 28) fallback in `.get(...)` is a defensive default for diagnostics produced before the keys were recorded; new baselines must include them. Removing or renaming `y_band_extra_px` / `x_band_extra_px` on `CalibrationConfig` would break every case in the suite.
+
 ### Outstanding Before Resuming Migration
 
 1. **Wire autosave into the Streamlit app** — `PlotVerifyApp.autosave_if_dirty()` exists but no Streamlit callback invokes it yet. Choose a session-bound location (`~/.plotverify/sessions/<session_id>.pvsession` default; configurable via `PLOTVERIFY_SESSION_DIR`) and hook it at end-of-callback.
@@ -483,7 +496,7 @@ This eliminates the geometry-drift failure mode entirely on the manual path. The
 2. `app_auto_axis.py` — gate the X/Y label bands panel and the Detect-axis-frame button on `ocr_available()`. Remove the `_callback_apply_calibration` workaround that salvages `existing_result.bbox` from a previous detection.
 3. `app_auto_axis.py` — when the user uploads an image and no detection has run, seed P1/P2/P3 at (10%, 90%), (90%, 90%), (10%, 10%) of the decoded image's dimensions.
 4. Add a unit test that confirms `manual_calibration(...) + render_overlay(...)` produces an image with the three anchor markers visible without any bbox.
-5. Delete `tests/test_real_image_regression.py::test_every_image_axis_frame_detection`. Its justification ("the geometry-only manual workflow would fail to seed anchors") no longer applies. Auto-mode frame detection is already covered by the verified-success regression cases.
+5. ✅ **Done** — `tests/test_real_image_regression.py::test_every_image_axis_frame_detection` has been deleted; the rationale (`tests/test_real_image_regression.py:302-310`) is preserved as a removed-with-explanation comment so future readers don't try to re-add it. Auto-mode frame detection is already covered by the verified-success regression cases.
 
 ## 19. Manual P1/P2 With Differing Pixel-Y Is Silently Averaged  ✅ Done
 
@@ -1997,4 +2010,110 @@ Refactors 1–7 keep the existing Streamlit app working at every step. Each can 
 - ⏳ `app_auto_axis.py` is < 1,000 lines — partially met. Streamlit code now delegates to `plotverify_core` for the bulk of computation, but full controller adoption is deferred until the Shiny app exists so the Streamlit app keeps shipping. Verify the line count after the next pass of Streamlit cleanup.
 - ✅ `AppState` JSON serialization — `plotverify_core.serialization` round-trips a session through a `.pvsession` zip; `tests/test_serialization.py` covers happy path, EditableOverlay edits, version mismatch, and malformed archives.
 - ⏳ Shiny main module < 1,500 lines, reads/writes `AppState` exclusively through `PlotVerifyApp` — gated on Milestone 3.
+
+# Part 9: Pre-Migration Cleanup Audit
+
+## Purpose
+
+Catalog every piece of code identified as removable *without changing application behavior*, so a single cleanup pass can be reviewed and committed before the Shiny migration proper begins. Each item below was located by reading the codebase as it stood on **2026-05-19** with `rg`/AST scans; the `Evidence` line records the verification step. If a later change re-introduces a use of one of these symbols, the audit is wrong for that item — re-verify before deletion.
+
+**Scope rule:** an item belongs here only if all three are true:
+1. It has zero non-import references in the repo, OR is a test file whose coverage is provided elsewhere.
+2. Removing it does not change any user-visible Streamlit behavior.
+3. Removing it does not change the pass/fail outcome of the surviving pytest suite.
+
+Items that *look* removable but are actually used are listed under **§9.6 Do Not Remove** so a future audit doesn't relitigate them.
+
+## 9.1 Unused imports (mechanical)
+
+Pyflakes-style; all are zero-reference outside their own `from ... import` line. Verification command (used for each): `rg -n '\b<name>\b' <file> | rg -v '^[0-9]+:(from |import )'` returns no rows.
+
+| File | Line | Symbol | Evidence |
+|---|---|---|---|
+| `plotverify_core/app.py` | 14 | `Any` (from `typing`) | 0 non-import refs |
+| `plotverify_core/app.py` | 14 | `replace` (from `dataclasses`) | 0 non-import refs |
+| `plotverify_core/app.py` | 18 | `np` | 0 non-import refs |
+| `plotverify_core/app.py` | 22 | `detect_axis_frame` | 0 non-import refs (used in `app_auto_axis.py`, not here) |
+| `plotverify_core/app.py` | 28 | `rebuild_result_from_detection` | 0 non-import refs (used in `serialization.py`, not here) |
+| `plotverify_core/app.py` | 33 | `hash_bytes` | 0 non-import refs |
+| `plotverify_core/app.py` | 43 | `WorkflowStage` | 0 non-import refs |
+| `axis_pipeline/legacy.py` | 24 | `List` (from `typing`) | 0 non-import refs |
+| `axis_pipeline/legacy.py` | 26 | `np` | 0 non-import refs |
+| `axis_pipeline/overlay.py` | 14 | `Dict` (from `typing`) | 0 non-import refs |
+| `plotverify_core/serialization.py` | 35 | `List` (from `typing`) | 0 non-import refs |
+| `plotverify_core/overlay_model.py` | 13 | `field` (from `dataclasses`) | 0 calls to `field(` in file |
+| `plotverify_core/series_state.py` | 9 | `field` (from `dataclasses`) | 0 calls to `field(` in file |
+
+Estimated removal: ~13 lines of imports.
+
+## 9.2 Dead test files
+
+These are pytest modules that either fail to collect today, or whose every assertion is duplicated by a surviving `tests/test_core_*` file that loads the same logic from `plotverify_core` instead of through the `app_auto_axis` re-export shim.
+
+### 9.2.1 Already broken at collection
+
+- **`tests/test_colors_pre_refactor.py`** — Imports `hex_complement` from `app_auto_axis`, which no longer re-exports it. `python -m pytest --collect-only` errors on this file (verified). Coverage is provided by `tests/test_core_no_streamlit.py` via `plotverify_core.colors`. **Safe to delete.**
+- **`test_new_pipeline.py`** (repo root) — Hardcodes `sys.path.insert(0, '/home/claude/plotverify')`, which only existed in the original sandbox. Pytest auto-discovers it and errors on collection. CLAUDE.md documents it as a manual tesseract-shim runner, not a unit test. **Options:** (a) delete; (b) move to a `scripts/` directory and remove from pytest discovery; (c) rename without `test_` prefix.
+
+### 9.2.2 Pre-refactor checkpoints — outcome of the diff pass
+
+These were originally written as "pin current behavior before extracting" snapshots during Refactor A. The cleanup-PR diff against the surviving `test_core_*` files showed that **only one of the four was genuinely duplicated**; the other three carried unique behavioral coverage that the audit had assumed lived elsewhere.
+
+**Audit correction:** `tests/test_core_no_streamlit.py` is a 40-line subprocess smoke test that only asserts `callable(compute_calibration)` / `callable(delta_e_mask)` / etc. It does **not** verify any values. The original §9.2.2 claim that it superseded `test_calibration_math_pre_refactor.py` and `test_masking_pre_refactor.py` was wrong.
+
+Outcome by file:
+
+- **`tests/test_csv_io_pre_refactor.py` → deleted.** Every assertion is mirrored by `tests/test_core_csv_io.py` (which already imports from `plotverify_core`).
+- **`tests/test_calibration_math_pre_refactor.py` → renamed to `tests/test_core_calibration_math.py`** and imports repointed from `app_auto_axis` to `plotverify_core`. Preserves 17 value-correctness tests: `log10_or_none` semantics, `compute_calibration` linear/log/degenerate cases, `p1p2_y_disagreement_px`, `px_to_data`/`data_to_px` round-trips, `P1P2_Y_TOLERANCE_PX == 3.0`.
+- **`tests/test_masking_pre_refactor.py` → renamed to `tests/test_core_masking.py`** and imports repointed to `plotverify_core` (`delta_e_mask`, `apply_color_mask`). Preserves 4 tests: matching-color all-set, dissimilar-zero, hue-wrap, in-range.
+- **`tests/test_axis_pipeline_pre_refactor.py` → renamed to `tests/test_axis_pipeline_typed_api.py`** (imports were already from `axis_pipeline`, no repointing needed). Preserves 13 tests: 7 `parse_numeric_tick` parsing cases (unicode minus, superscript/caret log10, e-notation, …), 5 `manual_calibration` edge cases (`log10_x_rejects_zero`, `to_legacy_dict_shape`), and `ocr_available` type guard. `test_typed_tick_edits.py` uses `manual_calibration` only as a fixture builder; it does not exercise `parse_numeric_tick` at all.
+
+Lesson for future audits: an "X is superseded by Y" claim must be verified by diffing assertion bodies, not just by matching imported symbol names. Smoke-test files (`test_core_no_streamlit.py`) prove a function exists, not that it behaves correctly.
+
+Net deletion from §9.2.2: 1 test file (~65 lines). Three files renamed (no behavior delta).
+
+## 9.3 Unreferenced helpers and unused dataclass fields
+
+- **`plotverify_core/matching.py:103-105`** — `find_pair(result, stem) -> Optional[Tuple[FileEntry, FileEntry]]`. Evidence: `rg -n 'find_pair'` yields one hit (the `def`). Not in `plotverify_core/__init__.py.__all__`. Was scoped for "look up a pair by case-insensitive stem" but no caller materialized; `MatchResult.pairs` is consulted directly. **Safe to delete.**
+- **`plotverify_core/session.py:98-99`** — `frame_preview_key: Optional[tuple] = None` and `frame_preview: Any = None` on `PerFileState`. Evidence: `rg -n '\.frame_preview(_key)?\b' plotverify_core app_auto_axis.py tests` returns 0 hits on the dataclass fields. The Streamlit app uses its own global `st.session_state.frame_preview_cache` (separate from the dataclass) — see `app_auto_axis.py:452`, `:934`. `serialization.py:119` already documents these fields as "transient" and excludes them from save. **Safe to delete from the dataclass.** When the Shiny app needs a per-file frame preview cache, it can re-add the fields with a typed shape.
+
+## 9.4 Stale parameters with no read inside the body
+
+- **`axis_pipeline/legacy.py:89`** — `mask_all_text: bool = True` parameter on `auto_detect_axes_ticks_ocr`. Comment: `# kept for signature compatibility`. Body never reads it. Evidence: `rg -n 'mask_all_text' axis_pipeline/legacy.py` shows the parameter declaration and nothing else; only other hits are an unrelated `st.session_state.ocr_mask_all_text` toggle in `app_auto_axis.py:1222` which never flows into this call. **Caveat:** this is a public-ish legacy API. External scripts may pass it as a keyword. Two options:
+  - **(a)** Remove now and bump `PIPELINE_VERSION` to `0.2`. Lower friction, breaks any external caller using the kwarg.
+  - **(b)** Keep until Refactor H Phase 3 (legacy-shim deletion), since the whole function is going away then anyway.
+  - Recommendation: **(b)** — defer. The cost of keeping a one-line dead parameter is zero, and we don't want a `PIPELINE_VERSION` bump on a cosmetic change.
+
+## 9.5 Cleanup PR — actual outcome
+
+Executed 2026-05-19. Pytest before: 150 collected + 2 collection errors. Pytest after: 143 collected, **137 passed, 6 xfailed**, no new failures, same xfail set.
+
+- **Unused imports** — 13 lines across 7 files.
+- **Dead helpers / fields** — `find_pair` (~3 lines), `PerFileState.frame_preview_key` + `.frame_preview` (~2 lines); `serialization.py:119` docstring also tightened.
+- **Broken-at-collection tests** — `test_colors_pre_refactor.py` deleted; `test_new_pipeline.py` relocated to `scripts/run_pipeline_with_tesseract.py` with a portable `sys.path.insert(Path(__file__).resolve().parent.parent)`; `CLAUDE.md` updated.
+- **Pre-refactor tests** — `test_csv_io_pre_refactor.py` deleted (~65 lines); the other three renamed + import-repointed (see §9.2.2 above).
+- **Deferred until Refactor H Phase 3:** `mask_all_text` parameter; `axis_auto.py`; `ocr_axis.py`; the bulk of `axis_pipeline/legacy.py`.
+
+## 9.6 Do Not Remove
+
+Symbols/files initially suspected but verified as still used. Listed so a future audit doesn't have to re-verify.
+
+- **`axis_auto.py`, `ocr_axis.py`** — Imported by `app_auto_axis.py:35-46`. Removal is Refactor H Phase 3 work and is gated on the Shiny app being the primary UI.
+- **`axis_pipeline/legacy.py`** as a whole — `rebuild_result_from_detection` is called by `plotverify_core/serialization.py:220`; `update_result_from_tick_edits` is called by `plotverify_core/app.py:213` and `app_auto_axis.py`; `update_detection_from_tick_tables` is called by `app_auto_axis.py:1078`. Deletion candidates inside this file are limited to the lines listed in §9.1 and §9.4.
+- **`frame_preview_run_count` Streamlit state** (`app_auto_axis.py:453, 946-947, 1334`) — surfaced in the "Preview diagnostics" expander. Diagnostic UI, not dead code.
+- **Symbols in `plotverify_core/__init__.py` `__all__`** that the AST scan flagged — they are intentional public re-exports; the AST tool doesn't model `__all__`. Do not remove based on AST output for `__init__.py` files.
+- **`bbox is None` guard branches in `app_auto_axis.py`** (`:1277`, `:1342-1347`, `:1462`) — these are Bug #18 (manual mode) tolerance, not workarounds for a fixed bug. They must stay so manual calibration without `detect_axis_frame` keeps rendering.
+- **`csv_io.py:87`** `df["series_color"] = df["series_color"].astype(object)` — this is a fix for the pandas all-NaN→float64 inference, exercised by `tests/test_serialization.py` round-trips. Required.
+
+## 9.7 Recommended execution order for the cleanup PR
+
+1. Delete the imports listed in §9.1 (one commit per file, or one commit total — they're independent).
+2. Delete `find_pair` (§9.3) and the two `PerFileState` fields (§9.3).
+3. Decide on `test_new_pipeline.py` (§9.2.1) — recommended: rename to `scripts/run_pipeline_with_tesseract.py` and update `CLAUDE.md` accordingly so the manual-run instruction still works.
+4. Delete `tests/test_colors_pre_refactor.py` (§9.2.1).
+5. Diff each `*_pre_refactor.py` test against its `test_core_*` replacement (§9.2.2); delete only after diff confirms no unique assertion is lost.
+6. Run the full suite: `python -m pytest`. Expected delta: same pass count as before deletion, minus the deleted tests. No xfailed count change.
+7. Run the Streamlit app and smoke-test: upload → run detection → manual override → apply calibration → export CSV. No visible difference.
+
+After this PR lands, revisit §9.4 only once Refactor H Phase 3 begins.
 

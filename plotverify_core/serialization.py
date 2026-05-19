@@ -32,7 +32,7 @@ import json
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 import pandas as pd
 
@@ -116,10 +116,10 @@ def _series_state_from_dict(d: Dict[str, Any]) -> SeriesState:
 def _per_file_state_to_dict(fs: PerFileState) -> Dict[str, Any]:
     """Convert a PerFileState to its JSON-serializable form.
 
-    Excludes derived/transient fields (image_bgr, frame_preview, etc.) —
-    they're recomputed on load. Binary payloads (image bytes, CSV bytes,
-    overlay edits) are emitted into the zip side-cars; this dict only
-    records their relative paths.
+    Excludes derived/transient fields (image_bgr, etc.) — they're
+    recomputed on load. Binary payloads (image bytes, CSV bytes, overlay
+    edits) are emitted into the zip side-cars; this dict only records
+    their relative paths.
     """
     image_ext = _extension(fs.image_filename) or ".png"
     image_path = f"{IMAGES_DIR}/{fs.file_id}{image_ext}"

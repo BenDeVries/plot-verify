@@ -6,7 +6,7 @@ their values to ``SeriesState`` fields rather than to free-form dict keys.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict
 
 import pandas as pd

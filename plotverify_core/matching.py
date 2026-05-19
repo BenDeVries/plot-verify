@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 
 @dataclass
@@ -98,8 +98,3 @@ def match_files(images: List[FileEntry], csvs: List[FileEntry]) -> MatchResult:
         result.csvs_without_image.append(by_stem_csv[stem][0])
 
     return result
-
-
-def find_pair(result: MatchResult, stem: str) -> Optional[Tuple[FileEntry, FileEntry]]:
-    """Helper for callers that resolve stems case-insensitively."""
-    return result.pairs.get(stem.lower())

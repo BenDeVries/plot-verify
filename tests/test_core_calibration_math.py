@@ -1,18 +1,18 @@
-"""Pin down current calibration-math behavior in app_auto_axis.py.
+"""Value-correctness tests for plotverify_core.calibration_math.
 
-After Refactor A, the same tests must pass against plotverify_core.calibration_math.
+Covers compute_calibration (linear + log10), data_to_px / px_to_data round
+trips, the log10_or_none helper, and the P1P2_Y_TOLERANCE_PX constant.
 """
 import math
 
-import numpy as np
 import pytest
 
-from app_auto_axis import (
+from plotverify_core import (
+    P1P2_Y_TOLERANCE_PX,
     compute_calibration,
     data_to_px,
+    log10_or_none as _log10_or_none,
     px_to_data,
-    _log10_or_none,
-    P1P2_Y_TOLERANCE_PX,
 )
 
 

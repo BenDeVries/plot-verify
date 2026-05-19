@@ -1,11 +1,11 @@
-"""Pin down current masking/CV behavior.
+"""Value-correctness tests for plotverify_core.masking.
 
-The masking functions are pure (no Streamlit state); they take numpy arrays
-and return numpy arrays. We assert shape, dtype, and a few key pixel values.
+Pure functions: numpy in, numpy out. Assertions cover mask shape, dtype, and
+a handful of pixel values.
 """
 import numpy as np
 
-from app_auto_axis import _delta_e_mask, apply_color_mask
+from plotverify_core import apply_color_mask, delta_e_mask as _delta_e_mask
 
 
 def _solid_image(color_bgr, h=20, w=30):
