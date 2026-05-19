@@ -12,7 +12,7 @@ This plan should be executed only after completing the first plan, which address
 
 The goal of this second plan is to migrate the app from Streamlit to Shiny while shifting the primary user workflow from single-image review to batch image/CSV processing.
 
-## Current Status (as of 2026-05-18)
+## Current Status (as of 2026-05-19)
 
 ### Completed
 
@@ -20,25 +20,35 @@ The goal of this second plan is to migrate the app from Streamlit to Shiny while
 - **All Part 8 refactors A–G** — `plotverify_core/` package fully extracted (~2000-line `app_auto_axis.py` now consumes the core).
 - **Part 8 Refactor H, Phases 1–2** — `axis_pipeline/legacy.py` entries emit `DeprecationWarning`; `update_result_from_tick_edits` / `rebuild_result_from_detection` exist as typed replacements.
 - **Milestones 1 and 2** — algorithm stabilization (per the first plan) and UI-independent core extraction.
-- **Real-image regression infrastructure** — `tests/test_real_image_regression.py` parametrizes over every verified diagnostic in `test_images/verified_raw_detection_diagnostics/`. Current test count: **165 passed, 6 xfailed**.
+- **Real-image regression infrastructure** — `tests/test_real_image_regression.py` parametrizes over every verified diagnostic in `test_images/verified_raw_detection_diagnostics/`. Current test count: **156 passed, 1 xfailed** (only `lin_log` remains xfail; see drift section below).
 - **1-SE outlier-exclusion regression test** — `tests/test_calibration_1se.py` locks in the rule that the 1-SE threshold must come from the min-rmse candidate's own residuals (the previous bug let a mispaired y=0 inflate the threshold past the point at which it could exclude itself).
 - **Manual-mode overlay contract** — `tests/test_overlay_manual_mode.py` confirms `manual_calibration() + render_overlay()` draws P1/P2/P3 anchors without any geometric bbox.
 - **AppState JSON serialization** — `plotverify_core/serialization.py` saves/loads sessions as `.pvsession` zip artifacts (manifest.json + images/ + csvs/ + overlays/). `PIPELINE_VERSION = "0.1"` lives in `axis_pipeline/__init__.py`; on load, a mismatch with the saved manifest's `pipeline_version` discards the saved `CalibrationResult` and re-invokes the pipeline (manual or auto). `PlotVerifyApp` carries `is_dirty` / `mark_dirty` / `autosave_if_dirty` hooks. Covered by `tests/test_serialization.py` (12 tests).
+- **Streamlit session save/load** — `plotverify_core/streamlit_bridge.py` translates between the legacy flat `st.session_state` (used by `app_auto_axis.py`) and `AppState`/`PerFileState` so the single-image Streamlit app can use `save_session` / `load_session` without being refactored onto `PlotVerifyApp` as its source of truth. Surfaces in the sidebar as a **💾 Session** expander with explicit Save/Load buttons (autosave-at-callback was deferred in favor of manual save). Default file location is `~/.plotverify/sessions/<session_id>.pvsession`, overridable via the `PLOTVERIFY_SESSION_DIR` env var; `session_id` is a uuid4 prefix stored under `__pv_session_id` and stable across reruns of the same tab. **Critical invariant** (regression-pinned in `tests/test_streamlit_bridge.py`): the rehydrated `image_hash` flat key must equal `md5(image_bytes)` — `_load_image_from_upload` uses that equality to early-return; a mismatch makes it treat the still-mounted file_uploader as a NEW image and reset the P1/P2/P3 anchor flat keys to default seed positions, silently overwriting the values just restored. Covered by `tests/test_streamlit_bridge.py` (14 tests).
 
-### Known Algorithmic Drift Caught by Regression Tests
+### Algorithmic Drift Resolution (closed 2026-05-19)
 
-The 6 xfailed cases in `tests/test_real_image_regression.py` split into two distinct drift signatures and need triage before resuming the Shiny migration:
+The 6 xfailed cases from the initial drift sweep collapsed into 3 distinct root causes, all of which have now been fixed in-tree. The final state is **5 of 6 cases green**, with only `lin_log` still xfail (a synthetic image with extreme 1e+90 y-values that is more an OCR/numerics edge case than a pipeline bug).
 
-| Image | Drift signature | Notes |
-|---|---|---|
-| `case1_single_arm_pk` | Frame detection: bbox top 91→415, left 169→41 | Identical wrong bbox to case2 — deterministic regression |
-| `case2_two_arm_pk_ddi` | Frame detection: same wrong bbox as case1 | Points at a single bug in `_choose_axes` |
-| `IgA_povetacicept` | Bbox matches verified; Phase B/C return no numeric records | Band-scan rotation/threshold issue |
-| `iga_zigakibart` | Frame detection: bbox right edge 949→320 | Geometry picks a different vertical line as the right plot border |
-| `iga_sc_povetacicept` | Bbox matches; P1/P2 pixel-y shifted ~72px | Anchor-selection: different y-label chosen as the baseline |
-| `lin_log` | Bbox matches; p1_data_y 0→1e+90, p3_data_y 4e+90→3e+90 | Log10 baseline drift on a log axis |
+| Image | Resolution |
+|---|---|
+| `case1_single_arm_pk` | ✓ Passing — fix #1 (geometry length-filter) |
+| `case2_two_arm_pk_ddi` | ✓ Passing — fix #1 (geometry length-filter) |
+| `iga_zigakibart` | ✓ Passing — fix #1 + side-effect fix (gated x-band rightward extension) |
+| `IgA_povetacicept` | ✓ Passing — fix #2 (trailing-sign-strip in parser) + re-baselined |
+| `iga_sc_povetacicept` | ✓ Passing — fix #2 (trailing-sign-strip) + re-baselined |
+| `lin_log` | ✗ xfail — rotated y-band missed `0e+00` this run; with only 4 ticks the 1-SE rule then drops the topmost `4e+90` as numerically ill-conditioned (lin_log has linear y-values on the order of 1e+90, not log10). OCR-stability + ill-conditioned-regression, not a deterministic pipeline bug. |
 
-Each `pytest.mark.xfail(strict=True)` will fail loudly if the case starts passing, so a fix will surface immediately and prompt removal of the marker.
+Fixes landed:
+- **Fix #1 — `axis_pipeline/geometry.py:_choose_axes`** — drop left-edge vertical candidates whose length is < 60% of the longest before applying the leftmost-by-position rule. On case1/case2/zigakibart, unmasked strokes of the rotated y-axis title (at x≈41/60 for case1, x≈96/102/108 for zigakibart) were beating the real y-axis (at x=169 and x=210 respectively) because the algorithm picked `min(pos)`. The real axis is always the strongest candidate, so a length floor selects it correctly without regressing any passing case.
+- **Fix #2 — `axis_pipeline/ocr.py:parse_numeric_tick`** — when `float(s2)` raises, retry once after stripping a single trailing `+`/`-`. EasyOCR sometimes pulls a tick-mark glyph into the label producing strings like `'-20-'`, `'-60-'`, `'-40-'`. No legitimate numeric format ends in a sign, so the strip-and-retry is safe. Leading signs are never stripped (would silently sign-flip a real negative label).
+- **Side-effect fix — `axis_pipeline/ocr.py:x_label_band` + `axis_pipeline/pipeline.py`** — add opt-in `extend_outward` parameter that extends the x-band rightward past `bbox.right`. The pipeline gates this on `image_width - bbox.right < 30` so it only fires when bbox.right is near the image edge (the configuration that clips a centered rightmost label like zigakibart's `'120'` to `'12'`). Crucially this gate prevents the extension from masking the `loglog_inner_tick` deliberate-failure case (right margin = 54 px). The band is NOT extended leftward — the y-tick label strip sits there, and capturing y labels in the x-band confuses pairing (verified by the case3 regression that left-extension introduced).
+
+Re-baselined diagnostics:
+- `test_images/verified_raw_detection_diagnostics/iga_povetacicept_success.txt` — 4 y-ticks now paired (was 2); OLS calibration over -20/-40/-60/-80 within 0.5% of the previous two-point scale.
+- `test_images/verified_raw_detection_diagnostics/iga_sc_povetacicept_success.txt` — calibration now uses the real `-40`/`-60`/`-80` labels (scale ≈ -0.28) instead of accidentally calibrating off rotated y-axis-title fragments (verified scale was -0.099, which encoded the broken-parser state).
+
+Each `pytest.mark.xfail(strict=True)` will fail loudly if the case starts passing, so any future regression here surfaces immediately and prompts removal of the marker.
 
 ### Band-Override Capture Protocol (Do Not Simplify)
 
@@ -55,10 +65,11 @@ This is the regression protocol — do **not** rewrite the test to use only `Cal
 
 ### Outstanding Before Resuming Migration
 
-1. **Wire autosave into the Streamlit app** — `PlotVerifyApp.autosave_if_dirty()` exists but no Streamlit callback invokes it yet. Choose a session-bound location (`~/.plotverify/sessions/<session_id>.pvsession` default; configurable via `PLOTVERIFY_SESSION_DIR`) and hook it at end-of-callback.
-2. **Investigate the 6 drift cases** (real regressions on plots the user has verified). Start with `case1`/`case2` since the identical wrong-bbox signature points at a single deterministic bug in `_choose_axes`.
-3. **CI setup** — wire the test suite (now 165 passed, 6 xfailed) into a hook or GitHub Actions so regressions can't land silently.
-4. **Begin Milestone 3** — minimal Shiny single-image app.
+1. ~~**Investigate the 6 drift cases**~~ — closed 2026-05-19; 5 of 6 cases fixed (see "Algorithmic Drift Resolution" above). `lin_log` remains as a single xfail and is OCR-stability rather than a pipeline bug — acceptable to ship the migration without resolving it.
+2. ~~**CI setup**~~ — closed 2026-05-19. GitHub Actions workflow at `.github/workflows/tests.yml` runs the full suite (156 passed, 1 xfailed) on push and PR across Python 3.10/3.11/3.12 with `~/.EasyOCR` cached between runs. Optional local pre-push hook at `scripts/git-hooks/pre-push` (enable via `git config core.hooksPath scripts/git-hooks`). Dependency manifests: `requirements.txt` (runtime) and `requirements-dev.txt` (adds pytest).
+3. **Begin Milestone 3** — minimal Shiny single-image app.
+
+> Persistence is no longer a blocker: the Streamlit app gained a manual Save/Load UI backed by `plotverify_core/streamlit_bridge.py`. End-of-callback autosave via `PlotVerifyApp.autosave_if_dirty()` remains available on the controller — it can be wired in later if needed without further surgery to the bridge.
 
 ## High-Level Migration Goals
 
@@ -462,7 +473,7 @@ Verification of error bars is one of the app's selling points. Silent display of
 
 ### Problem
 
-No size check exists on uploaded images. An 8000×6000 plot quietly consumes minutes of CPU during Phase A OCR and several GB during dark-mask preparation. Streamlit may appear to hang or run out of memory with no progress feedback. Tesseract OCR (and EasyOCR) scale roughly quadratically with image area.
+No size check exists on uploaded images. An 8000×6000 plot quietly consumes minutes of CPU during Phase A OCR and several GB during dark-mask preparation. Streamlit may appear to hang or run out of memory with no progress feedback. EasyOCR scales roughly quadratically with image area.
 
 ### Why Fix Before Migration
 
@@ -1546,7 +1557,7 @@ Still outstanding from the Part 8 acceptance criteria:
 - `AppState` JSON serialization round-trip (currently not exercised — see Outstanding §3).
 - Streamlit's adoption of `PlotVerifyApp` is still partial: callbacks call through the core for shared logic, but `st.session_state` keys remain the source of truth in places. Full migration is deferred until Shiny exists, so the Streamlit app keeps shipping.
 
-## Milestone 3: Build Minimal Shiny Single-Image App  ⏳ Not started — gated on drift investigation, Bug #18, and CI/serialization items
+## Milestone 3: Build Minimal Shiny Single-Image App  ⏳ Not started — drift investigation closed 2026-05-19 (only `lin_log` xfail remains, acceptable); gated on Bug #18 and CI setup
 
 Recreate the single-image workflow for both auto and manual calibration modes:
 
@@ -2053,7 +2064,7 @@ These are pytest modules that either fail to collect today, or whose every asser
 ### 9.2.1 Already broken at collection
 
 - **`tests/test_colors_pre_refactor.py`** — Imports `hex_complement` from `app_auto_axis`, which no longer re-exports it. `python -m pytest --collect-only` errors on this file (verified). Coverage is provided by `tests/test_core_no_streamlit.py` via `plotverify_core.colors`. **Safe to delete.**
-- **`test_new_pipeline.py`** (repo root) — Hardcodes `sys.path.insert(0, '/home/claude/plotverify')`, which only existed in the original sandbox. Pytest auto-discovers it and errors on collection. CLAUDE.md documents it as a manual tesseract-shim runner, not a unit test. **Options:** (a) delete; (b) move to a `scripts/` directory and remove from pytest discovery; (c) rename without `test_` prefix.
+- **`test_new_pipeline.py`** (repo root) — Hardcodes `sys.path.insert(0, '/home/claude/plotverify')`, which only existed in the original sandbox. Pytest auto-discovers it and errors on collection. CLAUDE.md documents it as a manual pipeline runner, not a unit test. **Options:** (a) delete; (b) move to a `scripts/` directory and remove from pytest discovery; (c) rename without `test_` prefix.
 
 ### 9.2.2 Pre-refactor checkpoints — outcome of the diff pass
 
@@ -2090,7 +2101,7 @@ Executed 2026-05-19. Pytest before: 150 collected + 2 collection errors. Pytest 
 
 - **Unused imports** — 13 lines across 7 files.
 - **Dead helpers / fields** — `find_pair` (~3 lines), `PerFileState.frame_preview_key` + `.frame_preview` (~2 lines); `serialization.py:119` docstring also tightened.
-- **Broken-at-collection tests** — `test_colors_pre_refactor.py` deleted; `test_new_pipeline.py` relocated to `scripts/run_pipeline_with_tesseract.py` with a portable `sys.path.insert(Path(__file__).resolve().parent.parent)`; `CLAUDE.md` updated.
+- **Broken-at-collection tests** — `test_colors_pre_refactor.py` deleted; `test_new_pipeline.py` relocated to a `scripts/` runner with a portable `sys.path.insert(Path(__file__).resolve().parent.parent)`; `CLAUDE.md` updated. (The relocated runner has since been removed.)
 - **Pre-refactor tests** — `test_csv_io_pre_refactor.py` deleted (~65 lines); the other three renamed + import-repointed (see §9.2.2 above).
 - **Deferred until Refactor H Phase 3:** `mask_all_text` parameter; `axis_auto.py`; `ocr_axis.py`; the bulk of `axis_pipeline/legacy.py`.
 
@@ -2109,7 +2120,7 @@ Symbols/files initially suspected but verified as still used. Listed so a future
 
 1. Delete the imports listed in §9.1 (one commit per file, or one commit total — they're independent).
 2. Delete `find_pair` (§9.3) and the two `PerFileState` fields (§9.3).
-3. Decide on `test_new_pipeline.py` (§9.2.1) — recommended: rename to `scripts/run_pipeline_with_tesseract.py` and update `CLAUDE.md` accordingly so the manual-run instruction still works.
+3. Decide on `test_new_pipeline.py` (§9.2.1) — recommended: move under `scripts/` as a manual pipeline runner and update `CLAUDE.md` accordingly so the manual-run instruction still works.
 4. Delete `tests/test_colors_pre_refactor.py` (§9.2.1).
 5. Diff each `*_pre_refactor.py` test against its `test_core_*` replacement (§9.2.2); delete only after diff confirms no unique assertion is lost.
 6. Run the full suite: `python -m pytest`. Expected delta: same pass count as before deletion, minus the deleted tests. No xfailed count change.

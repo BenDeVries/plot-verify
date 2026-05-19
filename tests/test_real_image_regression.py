@@ -54,24 +54,10 @@ DIAGNOSTIC_TO_IMAGE = {
 # Each entry: image_stem -> short reason. Add a TODO referencing a ticket /
 # PR when you start work on resolving any of these.
 KNOWN_DRIFT_XFAIL = {
-    "case1_single_arm_pk":
-        "frame detection: bbox top 91→415, left 169→41 — y-axis line "
-        "picked at a different row than the verified state.",
-    "case2_two_arm_pk_ddi":
-        "frame detection: same drift signature as case1 (identical wrong "
-        "bbox suggests a deterministic regression in _choose_axes).",
-    "IgA_povetacicept":
-        "post-frame: bbox matches verified but no tick pairing succeeds; "
-        "Phase B/C band scan returns no numeric records.",
-    "iga_zigakibart":
-        "frame detection: bbox right edge 949→320; geometry picked a "
-        "different vertical line as the right plot border.",
-    "iga_sc_povetacicept":
-        "anchor selection: bbox matches but P1/P2 pixel-y shifted ~72px; "
-        "a different y-label is being chosen as the baseline (bottom-most).",
     "lin_log":
-        "anchor selection on log axis: bbox matches but p3.y shifted; "
-        "p1_data_y 0→1e+90 and p3_data_y 4e+90→3e+90 (log10 baseline drift).",
+        "rotated y-band retry missed the '0e+00' label this run; with only "
+        "4 ticks the 1-SE rule then drops the topmost '4e+90' as numerically "
+        "ill-conditioned (lin_log has linear y-values on the order of 1e+90).",
 }
 
 

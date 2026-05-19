@@ -181,7 +181,7 @@ def manual_calibration(
 
 
 # Type alias: (image_bgr, allowlist, phase, bbox_offset, kwargs) -> records.
-# Injectable so tests can swap in a tesseract shim instead of EasyOCR.
+# Injectable so tests can swap in a custom runner instead of EasyOCR.
 OCRRunner = Callable[..., List[OCRRecord]]
 
 
@@ -612,8 +612,17 @@ def _band_ocr_with_fallback(
         wide_extra = cfg.x_band_fallback_extra_px
         horiz = cfg.x_band_extra_horizontal_px
         phase_name = OCRPhase.X_BAND.value
+        # Only extend the right side of the band when bbox.right sits close to
+        # the image's right edge — that's the configuration where the rightmost
+        # tick label can overhang the bbox and get clipped (see x_label_band).
+        # When there's ample room past bbox.right, extending pulls in unrelated
+        # text and can produce a false-confident calibration on otherwise
+        # ambiguous plots.
+        img_w = img_bgr.shape[1]
+        extend_right = 25 if (img_w - int(bbox.right)) < 30 else 0
         compute_band = lambda extra: ocr_mod.x_label_band(
             bbox, extra_below=extra, extra_horizontal=horiz,
+            extend_outward=extend_right,
         )
     elif axis == "y":
         narrow_extra = cfg.y_band_extra_px

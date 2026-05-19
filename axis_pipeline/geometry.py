@@ -198,7 +198,14 @@ def _choose_axes(
     bottom_options = [c for c in horizontal if c.pos > 0.35 * h] or horizontal
     left_options = [c for c in vertical if c.pos < 0.65 * w] or vertical
     bottom = max(bottom_options, key=lambda c: (c.pos, c.length))
-    left = min(left_options, key=lambda c: (c.pos, -c.length))
+    # Drop weak left candidates before applying the leftmost rule: a thin
+    # vertical artifact (unmasked rotated y-axis title strokes, legend-frame
+    # edges) can sit further left than the real y-axis and would otherwise win
+    # `min(pos)` despite being much shorter. Real plot axes are at least ~60%
+    # of the longest left-side vertical run.
+    max_left_length = max(c.length for c in left_options)
+    strong_left = [c for c in left_options if c.length >= 0.6 * max_left_length]
+    left = min(strong_left, key=lambda c: (c.pos, -c.length))
 
     top_options = [c for c in horizontal
                    if c.pos < bottom.pos - 0.15 * h

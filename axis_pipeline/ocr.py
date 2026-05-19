@@ -16,8 +16,8 @@ Phase C — X-tick label band scan
 
 Notes
 -----
-- We import easyocr lazily; the module is usable for tests with a tesseract
-  shim (set `OCREngine.run = ...`) without easyocr installed.
+- We import easyocr lazily; the module is usable for tests with a custom
+  OCR runner (set `OCREngine.run = ...`) without easyocr installed.
 - Records from all phases are returned with a `phase` field so downstream
   pairing can prefer band-phase records over discovery-phase records.
 """
@@ -152,6 +152,19 @@ def parse_numeric_tick(text: str) -> Tuple[Optional[float], str, str, str]:
     try:
         value = float(s2)
     except ValueError:
+        # OCR sometimes merges an adjacent tick-mark glyph into the label,
+        # producing trailing-sign strings like "-20-" or "-60-". No legitimate
+        # numeric format ends in a sign, so retry once after stripping a
+        # single trailing '+'/'-'. Leading signs are NOT touched: stripping a
+        # leading '-' would silently flip the sign of a real negative label.
+        if s2[-1] in "+-":
+            try:
+                value = float(s2[:-1])
+            except ValueError:
+                return None, s, "parse_failed", "could not parse as float/log10"
+            repairs.append("trailing_sign_stripped")
+            flag = "; ".join(repairs)
+            return value, s, "auto_corrected", flag
         return None, s, "parse_failed", "could not parse as float/log10"
 
     status = "auto_corrected" if repairs or s != raw else "parsed"
@@ -557,14 +570,28 @@ def y_label_band(bbox, *, extra_left: int = 55, extra_vertical: int = 0) -> Tupl
     )
 
 
-def x_label_band(bbox, *, extra_below: int = 28, extra_horizontal: int = 0) -> Tuple[int, int, int, int]:
+def x_label_band(
+    bbox,
+    *,
+    extra_below: int = 28,
+    extra_horizontal: int = 0,
+    extend_outward: int = 0,
+) -> Tuple[int, int, int, int]:
     """Strip immediately below the x-axis where x-tick labels live.
 
     `extra_horizontal` trims inward from the left and right of the bbox, letting
     the user exclude labels at the extreme ends of the x-axis.
+
+    `extend_outward` extends the band to the right of bbox.right (only) so a
+    tick label centered on the rightmost tick is not clipped at the bbox edge.
+    Set this when the plot bbox is close to the image's right edge — in that
+    configuration, EasyOCR otherwise reads e.g. "120" as "12" because the last
+    digit falls outside the crop. Leftward extension is intentionally NOT
+    offered: the y-tick label strip sits left of bbox.left, and capturing y
+    labels in the x-band confuses pairing. `crop_band` clamps to image bounds.
     """
     left  = max(0, int(bbox.left) + extra_horizontal)
-    right = max(left, int(bbox.right) - extra_horizontal)
+    right = max(left, int(bbox.right) - extra_horizontal + extend_outward)
     return (
         left,
         int(bbox.bottom) + 2,                            # start just below axis line
