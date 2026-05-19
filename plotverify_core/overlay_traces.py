@@ -31,7 +31,7 @@ class OverlayTrace:
     ribbon_y_upper: np.ndarray
     ribbon_y_lower: np.ndarray
     color_hex: str
-    overlay_color_hex: str
+    marker_color_hex: str
     visible: bool
 
 
@@ -61,7 +61,7 @@ def build_overlay_traces(
             color_hex = sdf["series_color"].iloc[0] if "series_color" in sdf.columns else None
         if not is_valid_hex(color_hex):
             color_hex = FALLBACK_HEX
-        overlay_hex = hex_complement(color_hex)
+        marker_hex = hex_complement(color_hex)
 
         x = sdf["x"].to_numpy(dtype=float)
         y = sdf["y"].to_numpy(dtype=float)
@@ -95,7 +95,7 @@ def build_overlay_traces(
             ribbon_y_upper=y_upper,
             ribbon_y_lower=y_lower,
             color_hex=color_hex,
-            overlay_color_hex=overlay_hex,
+            marker_color_hex=marker_hex,
             visible=bool(series_visibility.get(series_name, True)),
         ))
 

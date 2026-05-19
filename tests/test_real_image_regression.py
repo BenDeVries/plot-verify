@@ -299,21 +299,12 @@ def test_every_image_decodes(image_filename):
     assert img.ndim == 3 and img.shape[2] == 3
 
 
-@pytest.mark.parametrize("image_filename", ALL_IMAGES)
-def test_every_image_axis_frame_detection(image_filename):
-    """Every test image yields a bbox from detect_axis_frame (no OCR needed
-    once the frame is detected). Catches regressions in the geometry-only path
-    that the manual-only workflow depends on.
-    """
-    from axis_pipeline import detect_axis_frame
-
-    img = cv2.imread(str(IMAGES_DIR / image_filename))
-    preview = detect_axis_frame(img)
-    assert preview.bbox is not None, (
-        f"{image_filename}: detect_axis_frame returned no bbox; the "
-        f"geometry-only manual workflow would fail to seed anchors."
-    )
-    # Bbox should be inside the image and have non-zero area.
-    h, w = img.shape[:2]
-    assert 0 <= preview.bbox.left < preview.bbox.right <= w
-    assert 0 <= preview.bbox.top < preview.bbox.bottom <= h
+# Removed: test_every_image_axis_frame_detection.
+#
+# Originally asserted that detect_axis_frame returned a non-None bbox for every
+# image, on the grounds that the manual-only workflow would "fail to seed
+# anchors" otherwise. As of Bug #18's redesign, the manual workflow no longer
+# relies on geometric detection at all — P1/P2/P3 are seeded at fixed image
+# percentages and the overlay tolerates result.bbox=None. The verified-success
+# regression cases already cover detect_axis_frame on the images where auto
+# calibration is expected to succeed; per-image bbox assertions add no signal.

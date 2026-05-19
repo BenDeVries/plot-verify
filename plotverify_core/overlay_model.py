@@ -69,6 +69,44 @@ class EditableOverlay:
         """Convenience constructor for unit tests."""
         return cls(pd.DataFrame(list(records)))
 
+    @classmethod
+    def from_audit_dataframe(cls, df: pd.DataFrame) -> "EditableOverlay":
+        """Rehydrate from a DataFrame produced by ``to_dataframe(include_audit_cols=True)``.
+
+        Unlike the regular constructor (which treats incoming x/y as the
+        originals), this reads the explicit ``original_*`` columns plus the
+        ``edited``/``edit_type`` flags so saved edits survive a round-trip.
+        Falls back to the regular constructor if any audit column is missing.
+        """
+        required = {"original_x", "original_y", "edited"}
+        if not required.issubset(df.columns):
+            return cls(df)
+
+        instance = cls.__new__(cls)
+        instance._points = {}
+        for i, row in df.reset_index(drop=True).iterrows():
+            pid = f"{row['series']}#{int(i)}"
+            edit_type = row.get("edit_type", "")
+            edit_type_val: Optional[str] = str(edit_type) if edit_type else None
+            edited = bool(row["edited"])
+            instance._points[pid] = OverlayPoint(
+                series=str(row["series"]),
+                point_id=pid,
+                x=float(row["x"]),
+                y=float(row["y"]),
+                y_err_lower=_opt_float(row.get("y_err_lower")),
+                y_err_upper=_opt_float(row.get("y_err_upper")),
+                color_hex=str(row.get("series_color", "#888888")),
+                original_x=float(row["original_x"]),
+                original_y=float(row["original_y"]),
+                original_y_err_lower=_opt_float(row.get("original_y_err_lower")),
+                original_y_err_upper=_opt_float(row.get("original_y_err_upper")),
+                edited=edited,
+                edit_timestamp=None,        # not persisted across save/load
+                edit_type=edit_type_val if edited else None,
+            )
+        return instance
+
     # ---- read API -----------------------------------------------------
 
     def __len__(self) -> int:

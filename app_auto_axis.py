@@ -68,7 +68,6 @@ from plotverify_core import (
     data_to_px,
     decode_and_maybe_downscale,
     delta_e_mask as _delta_e_mask,
-    hex_complement,
     hex_to_bgr,
     hex_to_hsv_opencv,
     init_series_states,
@@ -373,13 +372,7 @@ def build_overlay_figure(img_rgb, df, series_states, cal):
     for trace in traces:
         plot_visible = True if trace.visible else "legendonly"
         if trace.has_err.any():
-            error_y = dict(
-                type="data", symmetric=False,
-                array=trace.err_array_plus,
-                arrayminus=trace.err_array_minus,
-                color=trace.overlay_color_hex, thickness=1.5, width=4,
-            )
-            h_str = trace.overlay_color_hex.lstrip("#")
+            h_str = trace.color_hex.lstrip("#")
             fill_rgba = "rgba({},{},{},0.2)".format(
                 int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
             )
@@ -396,18 +389,15 @@ def build_overlay_figure(img_rgb, df, series_states, cal):
                 legendgroup=trace.series,
                 showlegend=False, visible=plot_visible, hoverinfo="skip",
             ))
-        else:
-            error_y = None
 
         fig.add_trace(go.Scatter(
             x=trace.x, y=trace.y,
             mode="lines+markers",
-            line=dict(color=trace.overlay_color_hex, width=2),
-            marker=dict(color=trace.overlay_color_hex, size=8,
+            line=dict(color=trace.color_hex, width=2),
+            marker=dict(color=trace.marker_color_hex, size=8,
                         line=dict(color="rgba(0,0,0,0.5)", width=0.5)),
             name=trace.series,
             legendgroup=trace.series,
-            error_y=error_y,
             visible=plot_visible,
         ))
 
@@ -592,19 +582,10 @@ def _callback_apply_calibration():
 
     # When the user calibrates purely manually (no auto-detection was used),
     # synthesise a typed CalibrationResult so the diagnostic overlay can render
-    # the manual P1/P2/P3 anchors. This keeps the overlay consistent with the
-    # auto-detection path and unlocks features that depend on `auto_axis_result`.
-    #
-    # Preserve the bbox from any existing detection so render_overlay still has
-    # a frame to draw on (manual_calibration's default bbox=None would short-
-    # circuit the overlay renderer and make P1/P2/P3 disappear).
+    # the manual P1/P2/P3 anchors. The overlay renderer tolerates bbox=None and
+    # will draw the anchors regardless — manual mode does not depend on any
+    # geometric frame detection.
     if not used_detection:
-        existing_result = st.session_state.get("auto_axis_result")
-        existing_bbox = (
-            existing_result.bbox
-            if existing_result is not None and existing_result.bbox is not None
-            else None
-        )
         try:
             manual_result = manual_calibration(
                 p1_pixel=(st.session_state.get("p1_px_x", 0.0),
@@ -619,7 +600,6 @@ def _callback_apply_calibration():
                 p1_data_y=float(st.session_state.get("p1_data_y", 0.0)),
                 x_log_base=x_log_base,
                 y_log_base=y_log_base,
-                bbox=existing_bbox,
             )
             if manual_result.success:
                 st.session_state.auto_axis_result = manual_result
@@ -672,6 +652,18 @@ def _load_image_from_upload(image_file):
         "cal_masked_img_path", "cal_masked_img_bgr",
     ):
         st.session_state.pop(k, None)
+
+    # Seed P1/P2/P3 at sensible default positions so the manual workflow
+    # starts with anchors visible on the image. The user drags them to the
+    # correct tick positions. Auto-detection (when available) overwrites
+    # these on its first successful run.
+    h, w = img_bgr.shape[:2]
+    st.session_state["p1_px_x"] = float(round(0.10 * w))
+    st.session_state["p1_px_y"] = float(round(0.90 * h))
+    st.session_state["p2_px_x"] = float(round(0.90 * w))
+    st.session_state["p2_px_y"] = float(round(0.90 * h))
+    st.session_state["p3_px_x"] = float(round(0.10 * w))
+    st.session_state["p3_px_y"] = float(round(0.10 * h))
 
 
 def _load_csv(csv_source):
@@ -1156,6 +1148,34 @@ def _render_manual_override(img_bgr):
         st.session_state.copy_detected_result = None
 
 
+def _render_manual_mode_tail(img_bgr):
+    """Sections 6 and 7 only — used when EasyOCR is unavailable.
+
+    Renders Manual override + Apply Calibration. Skips Detection settings,
+    frame preview, band controls, and the auto-detection results panel, since
+    none of those have meaning without OCR / geometric frame detection.
+    """
+    with st.expander("Manual override", expanded=True):
+        _render_manual_override(img_bgr)
+
+    st.button(
+        "Apply Calibration",
+        key="apply_calibration_primary",
+        on_click=_callback_apply_calibration,
+        type="primary",
+        use_container_width=True,
+        help="Applies the P1/P2/P3 values above. Enables the Overlay and Compare tabs.",
+    )
+
+    res = st.session_state.get("apply_calibration_result")
+    if res == "ok":
+        st.success("Calibration applied.")
+        st.session_state.apply_calibration_result = None
+    elif res and res.startswith("error:"):
+        st.error(res[len("error:"):])
+        st.session_state.apply_calibration_result = None
+
+
 def _render_calibration_tab(img_bgr):
     """Calibrate tab: one button at the top to run detection, one at the bottom to apply.
 
@@ -1223,9 +1243,13 @@ def _render_calibration_tab(img_bgr):
         key="run_detection_primary",
         type="primary",
         use_container_width=True,
+        disabled=not ocr_is_available,
         help=(
-            "Runs the full pipeline: EasyOCR text discovery, frame detection, "
-            "tick parsing, grid-fit, and per-axis calibration regression."
+            "EasyOCR is required for auto-detection. Use Manual override to set "
+            "P1/P2/P3 directly."
+            if not ocr_is_available
+            else "Runs the full pipeline: EasyOCR text discovery, frame detection, "
+                 "tick parsing, grid-fit, and per-axis calibration regression."
         ),
     )
     if detection_available:
@@ -1235,7 +1259,14 @@ def _render_calibration_tab(img_bgr):
             f"confidence {float(det.get('confidence', 0.0)):.2f}"
         )
 
-    # ── 3. Frame preview + band controls (always visible) ─────────────────────
+    # ── 3. Frame preview + band controls (auto-mode only) ─────────────────────
+    # The frame preview, X/Y label band sliders, and any rendering that depends
+    # on a detected bbox are OCR-mode-only. Manual calibration places anchors
+    # by user drag/edit and never consults the geometric frame detector.
+    if not ocr_is_available:
+        _render_manual_mode_tail(img_bgr)
+        return
+
     try:
         with st.spinner("Detecting plot frame..."):
             preview, _was_cached = _get_or_compute_frame_preview(img_bgr, image_hash)
@@ -1453,11 +1484,7 @@ def _render_calibration_tab(img_bgr):
             if new_detection_applied:
                 # Drop the previous run's manual-field values so the next
                 # _callback_apply_calibration repopulates them from the fresh
-                # detection (taking the `used_detection=True` branch). Without
-                # this, the second click of Run Detection would compute a
-                # stale `cal` from the prior anchors AND synthesize a manual
-                # CalibrationResult that overwrites the new one with bbox=None,
-                # making P1/P2/P3 vanish from the overlay.
+                # detection (taking the `used_detection=True` branch).
                 for key in ("p1_px_x", "p1_px_y", "p1_data_x", "p1_data_y",
                             "p2_px_x", "p2_px_y", "p2_data_x",
                             "p3_px_x", "p3_px_y", "p3_data_y"):

@@ -12,7 +12,16 @@ Public surface:
     render_band_preview(img_bgr, bbox, y_band, x_band) -> RGB image
     CalibrationConfig, CalibrationResult, AxisCalibration, FramePreview, ...
     parse_numeric_tick(text)  — re-exported for legacy callers
+    PIPELINE_VERSION    — bumped manually when run_calibration's output
+                          semantics change. Saved sessions compare this to
+                          decide whether to trust their saved CalibrationResult
+                          or re-run the pipeline on load.
 """
+
+# Bump this constant whenever run_calibration's output semantics change.
+# Used by plotverify_core.serialization to decide whether to trust a saved
+# CalibrationResult or re-invoke run_calibration on session load.
+PIPELINE_VERSION = "0.1"
 
 from .calibration import calibrate_axis
 from .gridfit import fit_linear_grid
@@ -49,6 +58,7 @@ __all__ = [
     "GridFit",
     "OCRPhase",
     "OCRRecord",
+    "PIPELINE_VERSION",
     "PairedTick",
     "ScaleType",
     "calibrate_axis",

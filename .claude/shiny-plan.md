@@ -16,12 +16,14 @@ The goal of this second plan is to migrate the app from Streamlit to Shiny while
 
 ### Completed
 
-- **All Part 1 bugs except #18** (#10–#17, #19) — see inline status notes per bug below.
+- **All Part 1 bugs (#10–#19)** — see inline status notes per bug below.
 - **All Part 8 refactors A–G** — `plotverify_core/` package fully extracted (~2000-line `app_auto_axis.py` now consumes the core).
 - **Part 8 Refactor H, Phases 1–2** — `axis_pipeline/legacy.py` entries emit `DeprecationWarning`; `update_result_from_tick_edits` / `rebuild_result_from_detection` exist as typed replacements.
 - **Milestones 1 and 2** — algorithm stabilization (per the first plan) and UI-independent core extraction.
-- **Real-image regression infrastructure** — `tests/test_real_image_regression.py` parametrizes over every verified diagnostic in `test_images/verified_raw_detection_diagnostics/`, plus smoke tests for every image. Final test count: **159 passed, 6 xfailed**.
+- **Real-image regression infrastructure** — `tests/test_real_image_regression.py` parametrizes over every verified diagnostic in `test_images/verified_raw_detection_diagnostics/`. Current test count: **165 passed, 6 xfailed**.
 - **1-SE outlier-exclusion regression test** — `tests/test_calibration_1se.py` locks in the rule that the 1-SE threshold must come from the min-rmse candidate's own residuals (the previous bug let a mispaired y=0 inflate the threshold past the point at which it could exclude itself).
+- **Manual-mode overlay contract** — `tests/test_overlay_manual_mode.py` confirms `manual_calibration() + render_overlay()` draws P1/P2/P3 anchors without any geometric bbox.
+- **AppState JSON serialization** — `plotverify_core/serialization.py` saves/loads sessions as `.pvsession` zip artifacts (manifest.json + images/ + csvs/ + overlays/). `PIPELINE_VERSION = "0.1"` lives in `axis_pipeline/__init__.py`; on load, a mismatch with the saved manifest's `pipeline_version` discards the saved `CalibrationResult` and re-invokes the pipeline (manual or auto). `PlotVerifyApp` carries `is_dirty` / `mark_dirty` / `autosave_if_dirty` hooks. Covered by `tests/test_serialization.py` (12 tests).
 
 ### Known Algorithmic Drift Caught by Regression Tests
 
@@ -40,12 +42,10 @@ Each `pytest.mark.xfail(strict=True)` will fail loudly if the case starts passin
 
 ### Outstanding Before Resuming Migration
 
-1. **Investigate the 6 drift cases** (highest priority — these are real regressions on plots the user has verified). Start with `case1`/`case2` since the identical wrong-bbox signature points at a single deterministic bug in `_choose_axes`.
-2. **Bug #18** (geometry-only text pre-masking) — only Part 1 bug not yet addressed. The manual-only workflow depends entirely on geometry-detection accuracy.
-3. **`AppState` JSON serialization** — Part 8 acceptance criterion not yet met; needed to round-trip per-file state for saved sessions.
-4. **Streamlit app import smoke test** — verify `app_auto_axis.py` still imports and runs after the refactor (would catch any latent breakage from the controller integration).
-5. **CI setup** — wire the 159-test suite into a hook or GitHub Actions so regressions can't land silently.
-6. **Begin Milestone 3** — minimal Shiny single-image app — only after the items above are settled.
+1. **Wire autosave into the Streamlit app** — `PlotVerifyApp.autosave_if_dirty()` exists but no Streamlit callback invokes it yet. Choose a session-bound location (`~/.plotverify/sessions/<session_id>.pvsession` default; configurable via `PLOTVERIFY_SESSION_DIR`) and hook it at end-of-callback.
+2. **Investigate the 6 drift cases** (real regressions on plots the user has verified). Start with `case1`/`case2` since the identical wrong-bbox signature points at a single deterministic bug in `_choose_axes`.
+3. **CI setup** — wire the test suite (now 165 passed, 6 xfailed) into a hook or GitHub Actions so regressions can't land silently.
+4. **Begin Milestone 3** — minimal Shiny single-image app.
 
 ## High-Level Migration Goals
 
@@ -463,27 +463,27 @@ The Shiny batch workflow will multiply this problem across many files. A single 
 4. Record the downscale factor in `diagnostics` so the overlay can compose against the original image when appropriate.
 5. Add a regression test using a synthetic large image.
 
-## 18. Geometry-Only Mode Performs No Text Pre-Masking  ⏳ Outstanding
+## 18. Manual Mode No Longer Relies on Geometric Detection  ✅ Done
 
-The only Part 1 bug not yet addressed. Required before Milestone 3 (Shiny single-image app) because the manual-only mode is a first-class workflow and depends entirely on `detect_axis_frame` accuracy. See [Outstanding Before Resuming Migration](#outstanding-before-resuming-migration) for relative priority.
+### Decision (2026-05-18)
 
-### Problem
+The original outline proposed adding a non-ML text-region heuristic so geometry-only frame detection would be reliable enough for the manual workflow. That approach was abandoned in favor of removing the dependency entirely: **manual mode never invokes geometric axis detection.** P1/P2/P3 anchors are placed at sensible defaults on image load (10%/90% of image dimensions), and the user drags them to the correct tick positions. Calibration is computed from the three anchor points and their data values via `axis_pipeline.manual_calibration`. `CalibrationResult.bbox` remains `None` in this mode and the overlay renderer tolerates that.
 
-When OCR is unavailable (EasyOCR missing, runner returns `[]`, or user disables OCR), `mask_records(img, [], ...)` returns the image unchanged. Geometric axis detection then runs on an image where every tick label, axis title, and legend entry contributes to the projection profile, lowering accuracy of `_choose_axes`. For the new manual-only mode (no EasyOCR / no pytorch), this is the only available frame-detection path, so its accuracy directly affects whether the "Detect axis frame" button is useful at all.
+This eliminates the geometry-drift failure mode entirely on the manual path. The tradeoff is a small cold-start cost (three explicit drags instead of nudging seeded anchors), accepted because (a) the geometry seed was unreliable enough that "Bug #18 fixes" would have been an open-ended quality investment, and (b) the manual-mode UI is the ground-truth path — it should not pretend to know where the axes are.
 
-### Why Fix Before Migration
+### Scope of `detect_axis_frame` going forward (option c)
 
-The new manual-only workflow depends entirely on geometry detection. Migrating without addressing this means manual mode quality will be visibly worse than auto mode, even on plots where geometry alone is sufficient.
+- **Stays as a public API.** `axis_pipeline.detect_axis_frame` is still used by the auto-mode "X/Y label bands" tuning panel and by tests, and `run_calibration` internally relies on the same `_detect_frame_internal` helper.
+- **No surface in manual mode.** No "Detect axis frame" button, no band controls, no frame-preview cache reads. These UI elements are gated on `ocr_available()`.
+- **The Streamlit "preserve previous bbox so the overlay works" workaround is removed.** The overlay renderer now draws P1/P2/P3 unconditionally when calibration succeeded; the bbox-dependent decorations (frame rectangle, geometric tick markers) are gated locally on `bbox is not None`.
 
 ### Outline to Address
 
-1. Add a lightweight, non-ML text-region heuristic that runs when no OCR records are available:
-   - Connected components of the dark mask filtered by aspect ratio and area (typical tick labels are wider than tall, < 1% of image area).
-   - OR a coarse MSER pass — OpenCV-only, no pytorch.
-2. Use the heuristic mask to whiten likely text regions before `detect_axes`.
-3. Surface a diagnostic counter (`geometry_only_text_regions_masked`).
-4. Test on at least three plots from `test_images/` with EasyOCR disabled and compare axis-detection accuracy before/after.
-5. If the heuristic harms accuracy on some plots, gate it behind a toggle (default on).
+1. `axis_pipeline/overlay.py::render_overlay` — drop the early return on `bbox is None`. Always draw P1/P2/P3 markers and the calibration anchor lines when `result.success`. Gate frame rectangle, geometric tick markers, grid-fit markers, and Phase B/C band shading on `bbox is not None`.
+2. `app_auto_axis.py` — gate the X/Y label bands panel and the Detect-axis-frame button on `ocr_available()`. Remove the `_callback_apply_calibration` workaround that salvages `existing_result.bbox` from a previous detection.
+3. `app_auto_axis.py` — when the user uploads an image and no detection has run, seed P1/P2/P3 at (10%, 90%), (90%, 90%), (10%, 10%) of the decoded image's dimensions.
+4. Add a unit test that confirms `manual_calibration(...) + render_overlay(...)` produces an image with the three anchor markers visible without any bbox.
+5. Delete `tests/test_real_image_regression.py::test_every_image_axis_frame_detection`. Its justification ("the geometry-only manual workflow would fail to seed anchors") no longer applies. Auto-mode frame detection is already covered by the verified-success regression cases.
 
 ## 19. Manual P1/P2 With Differing Pixel-Y Is Silently Averaged  ✅ Done
 
@@ -1995,6 +1995,6 @@ Refactors 1–7 keep the existing Streamlit app working at every step. Each can 
 - ✅ Every controller method on `PlotVerifyApp` has at least one unit test that runs without Streamlit or Shiny installed (`tests/test_core_app.py`).
 - ✅ All public APIs that take or return dict-shaped detections are marked deprecated and emit a `DeprecationWarning` (`tests/test_legacy_deprecation.py`).
 - ⏳ `app_auto_axis.py` is < 1,000 lines — partially met. Streamlit code now delegates to `plotverify_core` for the bulk of computation, but full controller adoption is deferred until the Shiny app exists so the Streamlit app keeps shipping. Verify the line count after the next pass of Streamlit cleanup.
-- ⏳ `AppState` JSON serialization — not yet exercised. Add a round-trip test before Milestone 3 so saved-session restoration is reliable.
+- ✅ `AppState` JSON serialization — `plotverify_core.serialization` round-trips a session through a `.pvsession` zip; `tests/test_serialization.py` covers happy path, EditableOverlay edits, version mismatch, and malformed archives.
 - ⏳ Shiny main module < 1,500 lines, reads/writes `AppState` exclusively through `PlotVerifyApp` — gated on Milestone 3.
 

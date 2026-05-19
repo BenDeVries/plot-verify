@@ -82,6 +82,9 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
     df["series"] = df["series"].astype(str)
 
     if has_series_color:
+        # Force object dtype: an all-NaN column read from a re-saved CSV comes
+        # back as float64, which then rejects the string fallback below.
+        df["series_color"] = df["series_color"].astype(object)
         invalid = ~df["series_color"].apply(is_valid_hex)
         report.n_invalid_series_colors = int(invalid.sum())
         if report.n_invalid_series_colors > 0:

@@ -11,6 +11,7 @@ NOT import streamlit or shiny.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
@@ -49,6 +50,8 @@ class PlotVerifyApp:
     def __init__(self, *, ocr_runner: Optional[Callable] = None) -> None:
         self.state = AppState()
         self.ocr_runner = ocr_runner
+        self._dirty = False
+        self._autosave_path: Optional[Path] = None
 
     # ------------------------------------------------------------------
     # OCR runtime check
@@ -87,6 +90,7 @@ class PlotVerifyApp:
             image_downscale_factor=load.downscale_factor,
         )
         self.state.add_file(fs)
+        self.mark_dirty()
         return file_id
 
     def add_csv(self, file_id: str, csv_filename: str, csv_text: str) -> None:
@@ -101,9 +105,11 @@ class PlotVerifyApp:
         fs.csv_df = df
         fs.overlay = EditableOverlay(df)
         fs.series_states = init_series_states(df)
+        self.mark_dirty()
 
     def remove_file(self, file_id: str) -> None:
         self.state.remove_file(file_id)
+        self.mark_dirty()
 
     # ------------------------------------------------------------------
     # File matching (for batch upload UI)
@@ -128,6 +134,7 @@ class PlotVerifyApp:
 
     def select(self, file_id: str) -> None:
         self.state.select(file_id)
+        self.mark_dirty()
 
     # ------------------------------------------------------------------
     # Masking
@@ -139,6 +146,7 @@ class PlotVerifyApp:
         # `NO_MASK` and `DEFAULT_MASK` are ready immediately; `CUSTOM_MASK`
         # requires the user to save their adjustments in the masking tab.
         fs.mask_ready = (choice in (MaskingChoice.NO_MASK, MaskingChoice.DEFAULT_MASK))
+        self.mark_dirty()
 
     # ------------------------------------------------------------------
     # Calibration
@@ -166,6 +174,7 @@ class PlotVerifyApp:
         if not result.success:
             fs.review_status = ReviewStatus.FAILED
             fs.review_reasons = list(result.warnings)
+        self.mark_dirty()
         return result
 
     def apply_manual_calibration(self, file_id: str,
@@ -193,6 +202,7 @@ class PlotVerifyApp:
         )
         if not result.success:
             fs.review_reasons = list(result.warnings)
+        self.mark_dirty()
         return result
 
     def update_tick_edits(self, file_id: str, x_edits, y_edits) -> CalibrationResult:
@@ -206,6 +216,7 @@ class PlotVerifyApp:
         fs.detection_result = new_result
         fs.detection_legacy_dict = new_result.to_legacy_dict()
         fs.review_status = ReviewStatus.MANUALLY_ADJUSTED
+        self.mark_dirty()
         return new_result
 
     def calibrate_all_with_defaults(self) -> Dict[str, CalibrationResult]:
@@ -229,6 +240,7 @@ class PlotVerifyApp:
     def mark_reviewed(self, file_id: str) -> None:
         fs = self._require(file_id)
         fs.review_status = ReviewStatus.REVIEWED
+        self.mark_dirty()
 
     def next_unreviewed(self) -> Optional[str]:
         return self.state.next_unreviewed()
@@ -245,6 +257,48 @@ class PlotVerifyApp:
             raise RuntimeError("No CSV loaded for this file.")
         df = fs.overlay.to_dataframe(include_audit_cols=include_audit_cols)
         return df.to_csv(index=False).encode("utf-8")
+
+    # ------------------------------------------------------------------
+    # Persistence (.pvsession zip)
+    # ------------------------------------------------------------------
+
+    @property
+    def is_dirty(self) -> bool:
+        """True when state has changed since the last successful save."""
+        return self._dirty
+
+    def mark_dirty(self) -> None:
+        """Flag the session as having unsaved changes. Called by mutators."""
+        self._dirty = True
+
+    def mark_clean(self) -> None:
+        self._dirty = False
+
+    def set_autosave_path(self, path: Path) -> None:
+        """Bind the controller to a file location for ``autosave_if_dirty``.
+
+        Caller's responsibility to choose a path inside a writable directory.
+        """
+        self._autosave_path = Path(path)
+
+    def save_session(self, path: Path) -> None:
+        """Write the current AppState to ``path`` (a ``.pvsession`` zip)."""
+        from .serialization import save_session as _save
+        _save(self.state, Path(path))
+        self.mark_clean()
+
+    def load_session(self, path: Path) -> None:
+        """Replace the current AppState with the contents of ``path``."""
+        from .serialization import load_session as _load
+        self.state = _load(Path(path), ocr_runner=self.ocr_runner)
+        self.mark_clean()
+
+    def autosave_if_dirty(self) -> bool:
+        """Write to the bound autosave path when dirty. Returns True iff saved."""
+        if not self._dirty or self._autosave_path is None:
+            return False
+        self.save_session(self._autosave_path)
+        return True
 
     # ------------------------------------------------------------------
     # Internals

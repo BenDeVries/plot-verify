@@ -42,6 +42,7 @@ from .masking import apply_color_mask, delta_e_mask
 from .matching import FileEntry, MatchResult, make_file_entry, match_files
 from .overlay_model import EditableOverlay, OverlayPoint
 from .overlay_traces import OverlayTrace, build_overlay_traces
+from .serialization import SCHEMA_VERSION, load_session, save_session
 from .series_state import SeriesState, init_series_states
 from .session import (
     Anchors,
@@ -74,6 +75,7 @@ __all__ = [
     "OPTIONAL_ERROR_COLUMNS",
     "P1P2_Y_TOLERANCE_PX",
     "REQUIRED_COLUMNS",
+    "SCHEMA_VERSION",
     "SeriesState",
     "apply_color_mask",
     "build_overlay_traces",
@@ -89,8 +91,10 @@ __all__ = [
     "init_series_states",
     "is_valid_hex",
     "load_csv",
+    "load_session",
     "log10_or_none",
     "make_file_entry",
     "match_files",
     "px_to_data",
+    "save_session",
 ]
