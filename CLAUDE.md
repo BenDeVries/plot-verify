@@ -12,15 +12,22 @@ PlotVerify is a Streamlit app for verifying AI-extracted data from scientific pl
 streamlit run app_auto_axis.py
 ```
 
-## Running the pipeline in a script (with tesseract fallback)
-
-EasyOCR requires a model download; in sandboxes or CI use the tesseract shim defined in `scripts/run_pipeline_with_tesseract.py`:
+## Tests and CI
 
 ```bash
-python scripts/run_pipeline_with_tesseract.py
+pip install -r requirements-dev.txt
+pytest -q
 ```
 
-The shim implements the same `OCRRunner` callable signature, so it is a drop-in for `run_calibration(..., ocr_runner=tesseract_runner)`.
+Baseline: **156 passed, 1 xfailed** with EasyOCR installed; **137 passed** without (the 20 real-image regression tests in `tests/test_real_image_regression.py` auto-skip when `easyocr` is missing).
+
+GitHub Actions (`.github/workflows/tests.yml`) runs the full suite on push and pull request against Python 3.10/3.11/3.12. The EasyOCR model is cached at `~/.EasyOCR` across runs.
+
+A local pre-push hook is available at `scripts/git-hooks/pre-push`. Enable it once per clone with:
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
 
 ## Architecture
 
@@ -89,6 +96,5 @@ P3 = topmost paired y-tick; its `data_x` is derived from the x-calibration at P3
 ## Key dependencies
 
 - `easyocr` — production OCR engine (lazy import in `ocr.py`; not needed if injecting a custom runner)
-- `pytesseract` — test/sandbox OCR shim only
 - `opencv-python` (cv2), `numpy`, `scipy` — image processing and calibration math
 - `streamlit`, `plotly`, `pandas`, `Pillow` — UI layer

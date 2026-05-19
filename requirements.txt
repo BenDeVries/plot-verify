@@ -1,0 +1,8 @@
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+Pillow>=10.0
+opencv-python-headless>=4.8
+plotly>=5.18
+streamlit>=1.30
+easyocr>=1.7

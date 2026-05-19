@@ -62,6 +62,7 @@ from plotverify_core import (
     LARGE_IMAGE_MAX_BYTES,
     LARGE_IMAGE_MAX_EDGE,
     P1P2_Y_TOLERANCE_PX,
+    PlotVerifyApp,
     SeriesState,
     apply_color_mask,
     compute_calibration,
@@ -73,8 +74,16 @@ from plotverify_core import (
     init_series_states,
     is_valid_hex,
     load_csv as _core_load_csv,
+    load_session as _load_session,
     log10_or_none as _log10_or_none,
     px_to_data,
+)
+from plotverify_core.streamlit_bridge import (
+    apply_app_to_flat_state,
+    build_app_from_flat_state,
+    ensure_session_id,
+    resolve_session_dir,
+    resolve_session_path,
 )
 
 
@@ -638,6 +647,10 @@ def _load_image_from_upload(image_file):
     st.session_state.image_rgb = img_rgb
     st.session_state.image_bgr = img_bgr
     st.session_state.image_hash = img_hash
+    # Retained for session-save (.pvsession zips embed the original bytes,
+    # not the decoded array). Cheap to keep — typical plots are <1 MB.
+    st.session_state["image_bytes"] = img_bytes
+    st.session_state["image_filename"] = getattr(image_file, "name", None) or "image.png"
     st.session_state.auto_axis_detection = None
     st.session_state.auto_axis_result = None
     st.session_state.auto_axis_image_hash = None
@@ -719,6 +732,97 @@ def _init_series_states(df):
 
 
 # ---------------------------------------------------------------------------
+# Session save / load (.pvsession)
+# ---------------------------------------------------------------------------
+
+def _render_session_io():
+    """Manual save / load of the current session as a .pvsession zip.
+
+    Save is a no-op until an image is loaded. Path defaults to
+    ``~/.plotverify/sessions/<session_id>.pvsession`` (overridable via
+    the ``PLOTVERIFY_SESSION_DIR`` env var).
+    """
+    session_id = ensure_session_id(st.session_state)
+    save_path = resolve_session_path(session_id)
+
+    with st.expander("💾 Session", expanded=False):
+        st.caption(f"Path: `{save_path}`")
+
+        save_disabled = st.session_state.get("image_bgr") is None
+        if st.button(
+            "Save session",
+            key="pvsession_save_btn",
+            type="primary",
+            disabled=save_disabled,
+            use_container_width=True,
+            help=(
+                "Writes the current image, CSV, calibration, and series settings "
+                "to disk so this session can be reloaded later."
+            ),
+        ):
+            try:
+                app = build_app_from_flat_state(st.session_state)
+                save_path.parent.mkdir(parents=True, exist_ok=True)
+                app.save_session(save_path)
+                st.toast(f"Saved → {save_path.name}", icon="💾")
+            except Exception as e:
+                st.error(f"Save failed: {e}")
+
+        uploaded = st.file_uploader(
+            "Load .pvsession",
+            type=["pvsession", "zip"],
+            key="pvsession_upload",
+            help="Restore a previously-saved session.",
+        )
+        if uploaded is not None and uploaded.name != st.session_state.get(
+            "__pvsession_last_loaded_name"
+        ):
+            try:
+                # load_session needs a real path; spill the upload to a temp file.
+                with tempfile.NamedTemporaryFile(
+                    suffix=".pvsession", delete=False
+                ) as tmp:
+                    tmp.write(uploaded.getvalue())
+                    tmp_path = tmp.name
+                try:
+                    app = PlotVerifyApp()
+                    app.load_session(tmp_path)
+                finally:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                _apply_loaded_session_to_state(app)
+                st.session_state["__pvsession_last_loaded_name"] = uploaded.name
+                st.toast(f"Loaded ← {uploaded.name}", icon="📂")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Load failed: {e}")
+
+
+def _apply_loaded_session_to_state(app: PlotVerifyApp):
+    """Wipe Streamlit-side per-image flat keys, then hydrate from ``app``.
+
+    Without the wipe, a load from a session with fewer series than the current
+    one would leave stale ``vis_<old>`` / mask-widget keys behind that the
+    sidebar would render as orphan controls.
+    """
+    # Drop per-series widget keys from the prior session so they don't shadow
+    # the new series_states. We only touch known prefixes — leaving unrelated
+    # widget state (file_uploader pointers, etc.) intact.
+    for k in list(st.session_state.keys()):
+        for prefix in ("vis_", "vis_btn_", "interp_btn_",
+                       "use_de_", "de_", "hmin_", "hmax_",
+                       "smin_", "smax_", "vmin_", "vmax_",
+                       "cpick_"):
+            if isinstance(k, str) and k.startswith(prefix):
+                st.session_state.pop(k, None)
+                break
+
+    apply_app_to_flat_state(app, st.session_state)
+
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
@@ -765,6 +869,9 @@ def render_sidebar():
             csv_hash = hashlib.md5(csv_source.encode("utf-8")).hexdigest()
             new_df = _load_csv(csv_source)
             if new_df is not None:
+                st.session_state["csv_filename"] = (
+                    getattr(csv_file, "name", None) if csv_file is not None else "pasted.csv"
+                ) or "data.csv"
                 if st.session_state.csv_hash != csv_hash:
                     # New CSV — clear any user-picked color overrides from the old file.
                     st.session_state.series_color_overrides = {}
@@ -896,6 +1003,10 @@ def render_sidebar():
 
                     if state.get("interpolate") and not st.session_state.calibration.get("applied"):
                         st.info("Interpolation requires axis calibration.")
+
+        # ----- Session save / load -----
+        st.divider()
+        _render_session_io()
 
         # ----- Debug status (helps diagnose state issues) -----
         if df is not None and st.session_state.series_states:

@@ -368,14 +368,21 @@ pipeline.</p>
 <h2>Running the app</h2>
 <pre class="bash"><code>streamlit run app_auto_axis.py</code></pre>
 </div>
-<div id="running-the-pipeline-in-a-script-with-tesseract-fallback" class="section level2">
-<h2>Running the pipeline in a script (with tesseract fallback)</h2>
-<p>EasyOCR requires a model download; in sandboxes or CI use the
-tesseract shim defined in <code>test_new_pipeline.py</code>:</p>
-<pre class="bash"><code>python test_new_pipeline.py</code></pre>
-<p>The shim implements the same <code>OCRRunner</code> callable
-signature, so it is a drop-in for
-<code>run_calibration(..., ocr_runner=tesseract_runner)</code>.</p>
+<div id="tests-and-ci" class="section level2">
+<h2>Tests and CI</h2>
+<pre class="bash"><code>pip install -r requirements-dev.txt
+pytest -q</code></pre>
+<p>Baseline: <strong>156 passed, 1 xfailed</strong> with EasyOCR
+installed; <strong>137 passed</strong> without (the 20 real-image
+regression tests in <code>tests/test_real_image_regression.py</code>
+auto-skip when <code>easyocr</code> is missing).</p>
+<p>GitHub Actions (<code>.github/workflows/tests.yml</code>) runs the
+full suite on push and pull request against Python 3.10/3.11/3.12. The
+EasyOCR model is cached at <code>~/.EasyOCR</code> across runs.</p>
+<p>A local pre-push hook is available at
+<code>scripts/git-hooks/pre-push</code>. Enable it once per clone
+with:</p>
+<pre class="bash"><code>git config core.hooksPath scripts/git-hooks</code></pre>
 </div>
 <div id="architecture" class="section level2">
 <h2>Architecture</h2>
@@ -510,7 +517,6 @@ x-calibration at P3’s pixel-x position.</p>
 <ul>
 <li><code>easyocr</code> — production OCR engine (lazy import in
 <code>ocr.py</code>; not needed if injecting a custom runner)</li>
-<li><code>pytesseract</code> — test/sandbox OCR shim only</li>
 <li><code>opencv-python</code> (cv2), <code>numpy</code>,
 <code>scipy</code> — image processing and calibration math</li>
 <li><code>streamlit</code>, <code>plotly</code>, <code>pandas</code>,

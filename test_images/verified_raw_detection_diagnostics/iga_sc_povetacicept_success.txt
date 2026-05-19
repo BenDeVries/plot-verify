@@ -1,229 +1,166 @@
 {
   "success": true,
-  "confidence": 0.8330580575287737,
+  "confidence": 0.8705580575287737,
   "mode": "ocr_masked_open_axes",
   "bbox": [
     182,
-    251,
+    250,
     817,
     610
   ],
   "p1": [
-    340,
-    393
+    340.0,
+    537.0
   ],
   "p2": [
-    657,
-    393
+    657.0,
+    537.0
   ],
   "p3": [
-    340,
-    322
+    340.0,
+    393.0
   ],
-  "p1_data_x": 29,
-  "p2_data_x": 85,
+  "p1_data_x": 29.0,
+  "p2_data_x": 85.0,
   "p3_data_x": 28.97065028460731,
-  "p1_data_y": 1,
-  "p3_data_y": 8,
+  "p1_data_y": -80.0,
+  "p3_data_y": -40.0,
   "x_ticks": [
     [
-      221,
-      610,
-      1
+      221.0,
+      610.0,
+      1.0
     ],
     [
-      260,
-      610,
-      1
+      260.0,
+      610.0,
+      1.0
     ],
     [
-      300,
-      610,
-      1
+      300.0,
+      610.0,
+      1.0
     ],
     [
-      340,
-      610,
-      1
+      340.0,
+      610.0,
+      1.0
     ],
     [
-      379,
-      610,
-      1
+      379.0,
+      610.0,
+      1.0
     ],
     [
-      419,
-      610,
-      1
+      419.0,
+      610.0,
+      1.0
     ],
     [
-      459,
-      610,
-      1
+      459.0,
+      610.0,
+      1.0
     ],
     [
-      499,
-      610,
-      1
+      499.0,
+      610.0,
+      1.0
     ],
     [
-      538,
-      610,
-      1
+      538.0,
+      610.0,
+      1.0
     ],
     [
-      578,
-      610,
-      1
+      578.0,
+      610.0,
+      1.0
     ],
     [
-      617,
-      610,
-      1
+      617.0,
+      610.0,
+      1.0
     ],
     [
-      657,
-      610,
-      1
+      657.0,
+      610.0,
+      1.0
     ],
     [
-      697,
-      610,
-      1
+      697.0,
+      610.0,
+      1.0
     ],
     [
-      736,
-      610,
-      1
+      736.0,
+      610.0,
+      1.0
     ],
     [
-      776,
-      610,
-      1
+      776.0,
+      610.0,
+      1.0
     ]
   ],
   "y_ticks": [
     [
-      182,
-      257,
-      1
+      182.0,
+      257.0,
+      1.0
     ],
     [
-      182,
-      322,
-      1
+      182.0,
+      322.0,
+      1.0
     ],
     [
-      182,
-      393,
-      1
+      182.0,
+      393.0,
+      1.0
     ],
     [
-      182,
-      465,
-      1
+      182.0,
+      465.0,
+      1.0
     ],
     [
-      182,
-      537,
-      1
+      182.0,
+      537.0,
+      1.0
     ]
   ],
   "x_tick_table": [
-    {
-      "include": false,
-      "axis": "x",
-      "raw_text": "1",
-      "cleaned_text": "1",
-      "value": 1,
-      "pixel_position": 221,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 0.9999997615814351,
-      "pair_distance_px": 39.5,
-      "parse_status": "parsed",
-      "status": "paired_to_tick_mark",
-      "flag": "",
-      "bbox": [
-        174,
-        637,
-        189,
-        664
-      ],
-      "grid_index": 0
-    },
-    {
-      "include": false,
-      "axis": "x",
-      "raw_text": "11",
-      "cleaned_text": "11",
-      "value": 11,
-      "pixel_position": 300,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 0.23982507637371964,
-      "pair_distance_px": 22.5,
-      "parse_status": "parsed",
-      "status": "paired_to_tick_mark",
-      "flag": "",
-      "bbox": [
-        282,
-        612,
-        363,
-        628
-      ],
-      "grid_index": 2
-    },
     {
       "include": true,
       "axis": "x",
       "raw_text": "29",
       "cleaned_text": "29",
-      "value": 29,
-      "pixel_position": 340,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 0.9999981455391691,
-      "pair_distance_px": 1,
+      "value": 29.0,
+      "pixel_position": 340.0,
+      "fixed_axis_pixel": 610.0,
+      "ocr_confidence": 0.9999989884757856,
+      "pair_distance_px": 0.5,
       "parse_status": "parsed",
       "status": "paired_to_tick_mark",
       "flag": "",
       "bbox": [
         319,
         633,
-        363,
+        362,
         667
       ],
       "grid_index": 3
-    },
-    {
-      "include": false,
-      "axis": "x",
-      "raw_text": "1",
-      "cleaned_text": "1",
-      "value": 1,
-      "pixel_position": 459,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 0.13230481259896365,
-      "pair_distance_px": 19,
-      "parse_status": "parsed",
-      "status": "monotonicity_violation",
-      "flag": "",
-      "bbox": [
-        439,
-        612,
-        517,
-        626
-      ],
-      "grid_index": 6
     },
     {
       "include": true,
       "axis": "x",
       "raw_text": "57",
       "cleaned_text": "57",
-      "value": 57,
-      "pixel_position": 499,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 0.9999992413568111,
-      "pair_distance_px": 1,
+      "value": 57.0,
+      "pixel_position": 499.0,
+      "fixed_axis_pixel": 610.0,
+      "ocr_confidence": 0.9999995785315409,
+      "pair_distance_px": 1.0,
       "parse_status": "parsed",
       "status": "paired_to_tick_mark",
       "flag": "",
@@ -236,36 +173,15 @@
       "grid_index": 7
     },
     {
-      "include": false,
-      "axis": "x",
-      "raw_text": "1",
-      "cleaned_text": "1",
-      "value": 1,
-      "pixel_position": 617,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 0.31038438278125113,
-      "pair_distance_px": 22,
-      "parse_status": "parsed",
-      "status": "monotonicity_violation",
-      "flag": "",
-      "bbox": [
-        600,
-        612,
-        678,
-        626
-      ],
-      "grid_index": 10
-    },
-    {
       "include": true,
       "axis": "x",
       "raw_text": "85",
       "cleaned_text": "85",
-      "value": 85,
-      "pixel_position": 657,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 1,
-      "pair_distance_px": 1,
+      "value": 85.0,
+      "pixel_position": 657.0,
+      "fixed_axis_pixel": 610.0,
+      "ocr_confidence": 1.0,
+      "pair_distance_px": 1.0,
       "parse_status": "parsed",
       "status": "paired_to_tick_mark",
       "flag": "",
@@ -276,134 +192,113 @@
         667
       ],
       "grid_index": 11
-    },
-    {
-      "include": false,
-      "axis": "x",
-      "raw_text": "1",
-      "cleaned_text": "1",
-      "value": 1,
-      "pixel_position": 776,
-      "fixed_axis_pixel": 610,
-      "ocr_confidence": 0.4255396147282795,
-      "pair_distance_px": 15.5,
-      "parse_status": "parsed",
-      "status": "monotonicity_violation",
-      "flag": "",
-      "bbox": [
-        754,
-        612,
-        829,
-        625
-      ],
-      "grid_index": 14
     }
   ],
   "y_tick_table": [
     {
-      "include": true,
+      "include": false,
       "axis": "y",
-      "raw_text": "8",
-      "cleaned_text": "8",
-      "value": 8,
-      "pixel_position": 322,
-      "fixed_axis_pixel": 182,
-      "ocr_confidence": 0.814088605871266,
-      "pair_distance_px": 8.5,
-      "parse_status": "parsed",
+      "raw_text": "-20-",
+      "cleaned_text": "-20-",
+      "value": -20.0,
+      "pixel_position": 322.0,
+      "fixed_axis_pixel": 182.0,
+      "ocr_confidence": 0.5186150064056314,
+      "pair_distance_px": 1.0,
+      "parse_status": "auto_corrected",
       "status": "paired_to_tick_mark",
-      "flag": "",
+      "flag": "trailing_sign_stripped",
       "bbox": [
-        43,
-        301,
-        79,
-        360
+        110,
+        304,
+        168,
+        338
       ],
       "grid_index": 1
     },
     {
       "include": true,
       "axis": "y",
-      "raw_text": "1",
-      "cleaned_text": "1",
-      "value": 1,
-      "pixel_position": 393,
-      "fixed_axis_pixel": 182,
-      "ocr_confidence": 0.7266213336265572,
-      "pair_distance_px": 11.5,
-      "parse_status": "parsed",
+      "raw_text": "-40-",
+      "cleaned_text": "-40-",
+      "value": -40.0,
+      "pixel_position": 393.0,
+      "fixed_axis_pixel": 182.0,
+      "ocr_confidence": 0.9966243505477905,
+      "pair_distance_px": 0.5,
+      "parse_status": "auto_corrected",
       "status": "paired_to_tick_mark",
-      "flag": "",
+      "flag": "trailing_sign_stripped",
       "bbox": [
-        1,
-        337,
-        44,
-        426
+        114,
+        377,
+        173,
+        410
       ],
       "grid_index": 2
     },
     {
-      "include": false,
+      "include": true,
       "axis": "y",
-      "raw_text": "6",
-      "cleaned_text": "6",
-      "value": 6,
-      "pixel_position": 465,
-      "fixed_axis_pixel": 182,
-      "ocr_confidence": 0.9999983310706426,
-      "pair_distance_px": 1,
-      "parse_status": "parsed",
-      "status": "monotonicity_violation",
-      "flag": "",
+      "raw_text": "-60-",
+      "cleaned_text": "-60-",
+      "value": -60.0,
+      "pixel_position": 465.0,
+      "fixed_axis_pixel": 182.0,
+      "ocr_confidence": 0.9983184787170992,
+      "pair_distance_px": 0.0,
+      "parse_status": "auto_corrected",
+      "status": "paired_to_tick_mark",
+      "flag": "trailing_sign_stripped",
       "bbox": [
-        123,
-        453,
-        143,
-        479
+        110,
+        448,
+        174,
+        482
       ],
       "grid_index": 3
     },
     {
-      "include": false,
+      "include": true,
       "axis": "y",
-      "raw_text": "8",
-      "cleaned_text": "8",
-      "value": 8,
-      "pixel_position": 537,
-      "fixed_axis_pixel": 182,
-      "ocr_confidence": 0.2048974820882563,
-      "pair_distance_px": 42.5,
-      "parse_status": "parsed",
-      "status": "monotonicity_violation",
-      "flag": "",
+      "raw_text": "-80-",
+      "cleaned_text": "-80-",
+      "value": -80.0,
+      "pixel_position": 537.0,
+      "fixed_axis_pixel": 182.0,
+      "ocr_confidence": 0.9965753555297852,
+      "pair_distance_px": 0.5,
+      "parse_status": "auto_corrected",
+      "status": "paired_to_tick_mark",
+      "flag": "trailing_sign_stripped",
       "bbox": [
-        0,
-        422,
-        48,
-        567
+        111,
+        519,
+        168,
+        554
       ],
       "grid_index": 4
     }
   ],
   "x_grid_fit": {
-    "spacing": 40,
+    "spacing": 40.0,
     "origin": 218.4,
     "fitted_positions": [
-      221,
-      260,
-      300,
-      340,
-      379,
-      419,
-      459,
-      499,
-      538,
-      578,
-      617,
-      657,
-      697,
-      736,
-      776
+      221.0,
+      260.0,
+      300.0,
+      340.0,
+      379.0,
+      419.0,
+      459.0,
+      499.0,
+      538.0,
+      578.0,
+      617.0,
+      657.0,
+      697.0,
+      736.0,
+      776.0
     ],
     "fitted_indices": [
       0,
@@ -447,11 +342,11 @@
     "spacing": 71.5,
     "origin": 251.8,
     "fitted_positions": [
-      257,
-      322,
-      393,
-      465,
-      537
+      257.0,
+      322.0,
+      393.0,
+      465.0,
+      537.0
     ],
     "fitted_indices": [
       0,
@@ -485,39 +380,38 @@
     "log_base": null
   },
   "y_calibration": {
-    "scale": -0.09859154929577464,
-    "offset": 39.74647887323944,
-    "n_points": 2,
-    "method": "two_point",
-    "rmse_px": 0,
-    "rmse_data": 0,
+    "scale": -0.2777777777777778,
+    "offset": 69.16666666666669,
+    "n_points": 3,
+    "method": "ols",
+    "rmse_px": 2.953670686285154e-14,
+    "rmse_data": 8.204640795236539e-15,
     "log_likelihood": null,
-    "slope_se": null,
-    "offset_se": null,
+    "slope_se": 0.0,
+    "offset_se": 0.0,
     "df_t": null,
     "log_base": null
   },
-  "ocr_record_count": 26,
+  "ocr_record_count": 21,
   "ocr_enabled": true,
   "warnings": [
-    "Right plot border not confidently detected; using x-axis extent as the right edge.",
-    "Medium-confidence calibration. Review the diagnostic overlay."
+    "Right plot border not confidently detected; using x-axis extent as the right edge."
   ],
   "diagnostics": {
-    "phase_a_record_count": 20,
+    "phase_a_record_count": 17,
     "phase_a_oversized_filtered": 0,
     "axis_confidence": 0.88,
     "y_band_extra_used": 140,
-    "phase_b_record_count": 5,
+    "phase_b_record_count": 8,
     "x_band_extra_used": 55,
-    "phase_c_record_count": 9,
-    "combined_record_count": 26,
+    "phase_c_record_count": 5,
+    "combined_record_count": 21,
     "x_tick_candidates_outward": 15,
     "x_tick_candidates_inward": 0,
     "y_tick_candidates_outward": 5,
     "y_tick_candidates_inward": 2,
-    "x_label_candidates": 9,
-    "y_label_candidates": 5,
+    "x_label_candidates": 5,
+    "y_label_candidates": 7,
     "x_tick_detection_mode": "outward",
     "y_tick_detection_mode": "outward",
     "x_tick_raw_count": 15,

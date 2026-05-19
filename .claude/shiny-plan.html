@@ -370,13 +370,13 @@ which addresses:</p>
 Shiny while shifting the primary user workflow from single-image review
 to batch image/CSV processing.</p>
 </div>
-<div id="current-status-as-of-2026-05-18" class="section level2">
-<h2>Current Status (as of 2026-05-18)</h2>
+<div id="current-status-as-of-2026-05-19" class="section level2">
+<h2>Current Status (as of 2026-05-19)</h2>
 <div id="completed" class="section level3">
 <h3>Completed</h3>
 <ul>
-<li><strong>All Part 1 bugs except #18</strong> (#10–#17, #19) — see
-inline status notes per bug below.</li>
+<li><strong>All Part 1 bugs (#10–#19)</strong> — see inline status notes
+per bug below.</li>
 <li><strong>All Part 8 refactors A–G</strong> —
 <code>plotverify_core/</code> package fully extracted (~2000-line
 <code>app_auto_axis.py</code> now consumes the core).</li>
@@ -391,14 +391,52 @@ the first plan) and UI-independent core extraction.</li>
 <li><strong>Real-image regression infrastructure</strong> —
 <code>tests/test_real_image_regression.py</code> parametrizes over every
 verified diagnostic in
-<code>test_images/verified_raw_detection_diagnostics/</code>, plus smoke
-tests for every image. Final test count: <strong>159 passed, 6
-xfailed</strong>.</li>
+<code>test_images/verified_raw_detection_diagnostics/</code>. Current
+test count: <strong>150 passed, 6 xfailed</strong> (includes the 14 new
+<code>tests/test_streamlit_bridge.py</code> cases).</li>
 <li><strong>1-SE outlier-exclusion regression test</strong> —
 <code>tests/test_calibration_1se.py</code> locks in the rule that the
 1-SE threshold must come from the min-rmse candidate’s own residuals
 (the previous bug let a mispaired y=0 inflate the threshold past the
 point at which it could exclude itself).</li>
+<li><strong>Manual-mode overlay contract</strong> —
+<code>tests/test_overlay_manual_mode.py</code> confirms
+<code>manual_calibration() + render_overlay()</code> draws P1/P2/P3
+anchors without any geometric bbox.</li>
+<li><strong>AppState JSON serialization</strong> —
+<code>plotverify_core/serialization.py</code> saves/loads sessions as
+<code>.pvsession</code> zip artifacts (manifest.json + images/ + csvs/ +
+overlays/). <code>PIPELINE_VERSION = &quot;0.1&quot;</code> lives in
+<code>axis_pipeline/__init__.py</code>; on load, a mismatch with the
+saved manifest’s <code>pipeline_version</code> discards the saved
+<code>CalibrationResult</code> and re-invokes the pipeline (manual or
+auto). <code>PlotVerifyApp</code> carries <code>is_dirty</code> /
+<code>mark_dirty</code> / <code>autosave_if_dirty</code> hooks. Covered
+by <code>tests/test_serialization.py</code> (12 tests).</li>
+<li><strong>Streamlit session save/load</strong> —
+<code>plotverify_core/streamlit_bridge.py</code> translates between the
+legacy flat <code>st.session_state</code> (used by
+<code>app_auto_axis.py</code>) and
+<code>AppState</code>/<code>PerFileState</code> so the single-image
+Streamlit app can use <code>save_session</code> /
+<code>load_session</code> without being refactored onto
+<code>PlotVerifyApp</code> as its source of truth. Surfaces in the
+sidebar as a <strong>💾 Session</strong> expander with explicit
+Save/Load buttons (autosave-at-callback was deferred in favor of manual
+save). Default file location is
+<code>~/.plotverify/sessions/&lt;session_id&gt;.pvsession</code>,
+overridable via the <code>PLOTVERIFY_SESSION_DIR</code> env var;
+<code>session_id</code> is a uuid4 prefix stored under
+<code>__pv_session_id</code> and stable across reruns of the same tab.
+<strong>Critical invariant</strong> (regression-pinned in
+<code>tests/test_streamlit_bridge.py</code>): the rehydrated
+<code>image_hash</code> flat key must equal
+<code>md5(image_bytes)</code> — <code>_load_image_from_upload</code>
+uses that equality to early-return; a mismatch makes it treat the
+still-mounted file_uploader as a NEW image and reset the P1/P2/P3 anchor
+flat keys to default seed positions, silently overwriting the values
+just restored. Covered by <code>tests/test_streamlit_bridge.py</code>
+(14 tests).</li>
 </ul>
 </div>
 <div id="known-algorithmic-drift-caught-by-regression-tests" class="section level3">
@@ -458,28 +496,53 @@ border</td>
 the case starts passing, so a fix will surface immediately and prompt
 removal of the marker.</p>
 </div>
+<div id="band-override-capture-protocol-do-not-simplify" class="section level3">
+<h3>Band-Override Capture Protocol (Do Not Simplify)</h3>
+<p>The diagnostics in
+<code>test_images/verified_raw_detection_diagnostics/*.txt</code> were
+captured with <strong>per-image</strong> custom y/x band extras
+(e.g. <code>case3</code> = (130, 64); <code>iga_sc_povetacicept</code> =
+(140, 55)). Those values are stored inside each diagnostic under
+<code>diagnostics.y_band_extra_used</code> /
+<code>diagnostics.x_band_extra_used</code> and replayed by
+<code>tests/test_real_image_regression.py:130-135</code>:</p>
+<pre class="python"><code>cfg = CalibrationConfig(
+    y_band_extra_px=int(used.get(&quot;y_band_extra_used&quot;, 90)),
+    x_band_extra_px=int(used.get(&quot;x_band_extra_used&quot;, 28)),
+)</code></pre>
+<p>This is the regression protocol — do <strong>not</strong> rewrite the
+test to use only <code>CalibrationConfig()</code> defaults, and do
+<strong>not</strong> drop the
+<code>y_band_extra_used</code>/<code>x_band_extra_used</code> keys when
+re-baselining a diagnostic. The (90, 28) fallback in
+<code>.get(...)</code> is a defensive default for diagnostics produced
+before the keys were recorded; new baselines must include them. Removing
+or renaming <code>y_band_extra_px</code> / <code>x_band_extra_px</code>
+on <code>CalibrationConfig</code> would break every case in the
+suite.</p>
+</div>
 <div id="outstanding-before-resuming-migration" class="section level3">
 <h3>Outstanding Before Resuming Migration</h3>
 <ol style="list-style-type: decimal">
-<li><strong>Investigate the 6 drift cases</strong> (highest priority —
-these are real regressions on plots the user has verified). Start with
+<li><strong>Investigate the 6 drift cases</strong> (real regressions on
+plots the user has verified). Start with
 <code>case1</code>/<code>case2</code> since the identical wrong-bbox
 signature points at a single deterministic bug in
 <code>_choose_axes</code>.</li>
-<li><strong>Bug #18</strong> (geometry-only text pre-masking) — only
-Part 1 bug not yet addressed. The manual-only workflow depends entirely
-on geometry-detection accuracy.</li>
-<li><strong><code>AppState</code> JSON serialization</strong> — Part 8
-acceptance criterion not yet met; needed to round-trip per-file state
-for saved sessions.</li>
-<li><strong>Streamlit app import smoke test</strong> — verify
-<code>app_auto_axis.py</code> still imports and runs after the refactor
-(would catch any latent breakage from the controller integration).</li>
-<li><strong>CI setup</strong> — wire the 159-test suite into a hook or
-GitHub Actions so regressions can’t land silently.</li>
-<li><strong>Begin Milestone 3</strong> — minimal Shiny single-image app
-— only after the items above are settled.</li>
+<li><strong>CI setup</strong> — wire the test suite (now 150 passed, 6
+xfailed) into a hook or GitHub Actions so regressions can’t land
+silently.</li>
+<li><strong>Begin Milestone 3</strong> — minimal Shiny single-image
+app.</li>
 </ol>
+<blockquote>
+<p>Persistence is no longer a blocker: the Streamlit app gained a manual
+Save/Load UI backed by <code>plotverify_core/streamlit_bridge.py</code>.
+End-of-callback autosave via
+<code>PlotVerifyApp.autosave_if_dirty()</code> remains available on the
+controller — it can be wired in later if needed without further surgery
+to the bridge.</p>
+</blockquote>
 </div>
 </div>
 <div id="high-level-migration-goals" class="section level2">
@@ -1181,52 +1244,73 @@ overlay can compose against the original image when appropriate.</li>
 </ol>
 </div>
 </div>
-<div id="geometry-only-mode-performs-no-text-pre-masking-outstanding" class="section level2">
-<h2>18. Geometry-Only Mode Performs No Text Pre-Masking ⏳
-Outstanding</h2>
-<p>The only Part 1 bug not yet addressed. Required before Milestone 3
-(Shiny single-image app) because the manual-only mode is a first-class
-workflow and depends entirely on <code>detect_axis_frame</code>
-accuracy. See <a href="#outstanding-before-resuming-migration">Outstanding Before
-Resuming Migration</a> for relative priority.</p>
-<div id="problem-17" class="section level3">
-<h3>Problem</h3>
-<p>When OCR is unavailable (EasyOCR missing, runner returns
-<code>[]</code>, or user disables OCR),
-<code>mask_records(img, [], ...)</code> returns the image unchanged.
-Geometric axis detection then runs on an image where every tick label,
-axis title, and legend entry contributes to the projection profile,
-lowering accuracy of <code>_choose_axes</code>. For the new manual-only
-mode (no EasyOCR / no pytorch), this is the only available
-frame-detection path, so its accuracy directly affects whether the
-“Detect axis frame” button is useful at all.</p>
+<div id="manual-mode-no-longer-relies-on-geometric-detection-done" class="section level2">
+<h2>18. Manual Mode No Longer Relies on Geometric Detection ✅ Done</h2>
+<div id="decision-2026-05-18" class="section level3">
+<h3>Decision (2026-05-18)</h3>
+<p>The original outline proposed adding a non-ML text-region heuristic
+so geometry-only frame detection would be reliable enough for the manual
+workflow. That approach was abandoned in favor of removing the
+dependency entirely: <strong>manual mode never invokes geometric axis
+detection.</strong> P1/P2/P3 anchors are placed at sensible defaults on
+image load (10%/90% of image dimensions), and the user drags them to the
+correct tick positions. Calibration is computed from the three anchor
+points and their data values via
+<code>axis_pipeline.manual_calibration</code>.
+<code>CalibrationResult.bbox</code> remains <code>None</code> in this
+mode and the overlay renderer tolerates that.</p>
+<p>This eliminates the geometry-drift failure mode entirely on the
+manual path. The tradeoff is a small cold-start cost (three explicit
+drags instead of nudging seeded anchors), accepted because (a) the
+geometry seed was unreliable enough that “Bug #18 fixes” would have been
+an open-ended quality investment, and (b) the manual-mode UI is the
+ground-truth path — it should not pretend to know where the axes
+are.</p>
 </div>
-<div id="why-fix-before-migration-17" class="section level3">
-<h3>Why Fix Before Migration</h3>
-<p>The new manual-only workflow depends entirely on geometry detection.
-Migrating without addressing this means manual mode quality will be
-visibly worse than auto mode, even on plots where geometry alone is
-sufficient.</p>
+<div id="scope-of-detect_axis_frame-going-forward-option-c" class="section level3">
+<h3>Scope of <code>detect_axis_frame</code> going forward (option
+c)</h3>
+<ul>
+<li><strong>Stays as a public API.</strong>
+<code>axis_pipeline.detect_axis_frame</code> is still used by the
+auto-mode “X/Y label bands” tuning panel and by tests, and
+<code>run_calibration</code> internally relies on the same
+<code>_detect_frame_internal</code> helper.</li>
+<li><strong>No surface in manual mode.</strong> No “Detect axis frame”
+button, no band controls, no frame-preview cache reads. These UI
+elements are gated on <code>ocr_available()</code>.</li>
+<li><strong>The Streamlit “preserve previous bbox so the overlay works”
+workaround is removed.</strong> The overlay renderer now draws P1/P2/P3
+unconditionally when calibration succeeded; the bbox-dependent
+decorations (frame rectangle, geometric tick markers) are gated locally
+on <code>bbox is not None</code>.</li>
+</ul>
 </div>
 <div id="outline-to-address-17" class="section level3">
 <h3>Outline to Address</h3>
 <ol style="list-style-type: decimal">
-<li>Add a lightweight, non-ML text-region heuristic that runs when no
-OCR records are available:
-<ul>
-<li>Connected components of the dark mask filtered by aspect ratio and
-area (typical tick labels are wider than tall, &lt; 1% of image
-area).</li>
-<li>OR a coarse MSER pass — OpenCV-only, no pytorch.</li>
-</ul></li>
-<li>Use the heuristic mask to whiten likely text regions before
-<code>detect_axes</code>.</li>
-<li>Surface a diagnostic counter
-(<code>geometry_only_text_regions_masked</code>).</li>
-<li>Test on at least three plots from <code>test_images/</code> with
-EasyOCR disabled and compare axis-detection accuracy before/after.</li>
-<li>If the heuristic harms accuracy on some plots, gate it behind a
-toggle (default on).</li>
+<li><code>axis_pipeline/overlay.py::render_overlay</code> — drop the
+early return on <code>bbox is None</code>. Always draw P1/P2/P3 markers
+and the calibration anchor lines when <code>result.success</code>. Gate
+frame rectangle, geometric tick markers, grid-fit markers, and Phase B/C
+band shading on <code>bbox is not None</code>.</li>
+<li><code>app_auto_axis.py</code> — gate the X/Y label bands panel and
+the Detect-axis-frame button on <code>ocr_available()</code>. Remove the
+<code>_callback_apply_calibration</code> workaround that salvages
+<code>existing_result.bbox</code> from a previous detection.</li>
+<li><code>app_auto_axis.py</code> — when the user uploads an image and
+no detection has run, seed P1/P2/P3 at (10%, 90%), (90%, 90%), (10%,
+10%) of the decoded image’s dimensions.</li>
+<li>Add a unit test that confirms
+<code>manual_calibration(...) + render_overlay(...)</code> produces an
+image with the three anchor markers visible without any bbox.</li>
+<li>✅ <strong>Done</strong> —
+<code>tests/test_real_image_regression.py::test_every_image_axis_frame_detection</code>
+has been deleted; the rationale
+(<code>tests/test_real_image_regression.py:302-310</code>) is preserved
+as a removed-with-explanation comment so future readers don’t try to
+re-add it. Auto-mode frame detection is already covered by the
+verified-success regression cases.</li>
 </ol>
 </div>
 </div>
@@ -1238,7 +1322,7 @@ Done</h2>
 warning when the delta exceeds tolerance. A 3-anchor least-squares
 variant is still on the table for the Shiny UI (snap-on-drag would be
 the simpler alternative).</p>
-<div id="problem-18" class="section level3">
+<div id="problem-17" class="section level3">
 <h3>Problem</h3>
 <p><code>compute_calibration</code> computes
 <code>x_axis_pixel_y = (p1_px_y + p2_px_y) / 2.0</code> and uses that as
@@ -1250,7 +1334,7 @@ a common user mistake on rotated or distorted plots — the calibration
 will accept inconsistent input and produce a quietly-wrong
 transform.</p>
 </div>
-<div id="why-fix-before-migration-18" class="section level3">
+<div id="why-fix-before-migration-17" class="section level3">
 <h3>Why Fix Before Migration</h3>
 <p>The manual calibration path is now a first-class workflow. Anchor
 semantics must be unambiguous before drag UX is added in Shiny, or users
@@ -1285,7 +1369,7 @@ between Streamlit and Shiny in state management, reactivity, event
 handling, file handling, and UI rendering.</p>
 <div id="reactive-state-drift-across-files" class="section level2">
 <h2>1. Reactive State Drift Across Files</h2>
-<div id="problem-19" class="section level3">
+<div id="problem-18" class="section level3">
 <h3>Problem</h3>
 <p>In Streamlit, state is often stored in <code>st.session_state</code>.
 In Shiny, state will be split across reactive values, reactive
@@ -1317,7 +1401,7 @@ leak into another image.</p>
 </div>
 <div id="uploaded-file-temporary-path-issues" class="section level2">
 <h2>2. Uploaded File Temporary Path Issues</h2>
-<div id="problem-20" class="section level3">
+<div id="problem-19" class="section level3">
 <h3>Problem</h3>
 <p>Shiny and Streamlit handle uploaded files differently. File paths may
 be temporary, renamed, or unavailable after session changes.</p>
@@ -1344,7 +1428,7 @@ storage.</li>
 </div>
 <div id="large-batch-memory-pressure" class="section level2">
 <h2>3. Large Batch Memory Pressure</h2>
-<div id="problem-21" class="section level3">
+<div id="problem-20" class="section level3">
 <h3>Problem</h3>
 <p>Batch upload of many images and CSVs may consume more memory than the
 single-image Streamlit workflow.</p>
@@ -1369,7 +1453,7 @@ single-image Streamlit workflow.</p>
 </div>
 <div id="batch-ocr-runtime-bottlenecks" class="section level2">
 <h2>4. Batch OCR Runtime Bottlenecks</h2>
-<div id="problem-22" class="section level3">
+<div id="problem-21" class="section level3">
 <h3>Problem</h3>
 <p>EasyOCR and image processing may be slow when run across many
 files.</p>
@@ -1394,7 +1478,7 @@ is stable.</li>
 </div>
 <div id="plotly-dragedit-event-handling-differences" class="section level2">
 <h2>5. Plotly Drag/Edit Event Handling Differences</h2>
-<div id="problem-23" class="section level3">
+<div id="problem-22" class="section level3">
 <h3>Problem</h3>
 <p>Streamlit and Shiny differ in how Plotly events are captured and
 propagated. Point dragging and error-bar dragging may require custom
@@ -1426,7 +1510,7 @@ listeners.</li>
 </div>
 <div id="image-coordinate-mapping-mismatch" class="section level2">
 <h2>6. Image Coordinate Mapping Mismatch</h2>
-<div id="problem-24" class="section level3">
+<div id="problem-23" class="section level3">
 <h3>Problem</h3>
 <p>Interactive dragging requires converting between:</p>
 <ul>
@@ -1462,7 +1546,7 @@ drift.</p>
 </div>
 <div id="mutually-exclusive-checkbox-columns" class="section level2">
 <h2>7. Mutually Exclusive Checkbox Columns</h2>
-<div id="problem-25" class="section level3">
+<div id="problem-24" class="section level3">
 <h3>Problem</h3>
 <p>The batch masking selection menu uses three checkbox columns where
 only one can be selected per file.</p>
@@ -1496,7 +1580,7 @@ columns, if possible.</li>
 </div>
 <div id="custom-masking-workflow-branching-bugs" class="section level2">
 <h2>8. Custom Masking Workflow Branching Bugs</h2>
-<div id="problem-26" class="section level3">
+<div id="problem-25" class="section level3">
 <h3>Problem</h3>
 <p>If any file is marked <code>Apply custom masking</code>, the user
 should be taken to the masking tab. Other files should still get their
@@ -1525,7 +1609,7 @@ default.</li>
 </div>
 <div id="manual-review-status-bugs" class="section level2">
 <h2>9. Manual Review Status Bugs</h2>
-<div id="problem-27" class="section level3">
+<div id="problem-26" class="section level3">
 <h3>Problem</h3>
 <p>The calibration tab requires manual review for confidence below
 <code>0.95</code>, while also allowing users to jump between files.
@@ -1561,7 +1645,7 @@ mark reviewed after user applies/saves calibration.</li>
 </div>
 <div id="collapsible-panel-interaction-bugs" class="section level2">
 <h2>10. Collapsible Panel Interaction Bugs</h2>
-<div id="problem-28" class="section level3">
+<div id="problem-27" class="section level3">
 <h3>Problem</h3>
 <p>The calibration UI requires multiple collapsible panels with linked
 behavior:</p>
@@ -1601,7 +1685,7 @@ necessary.</li>
 </div>
 <div id="export-location-limitations" class="section level2">
 <h2>11. Export Location Limitations</h2>
-<div id="problem-29" class="section level3">
+<div id="problem-28" class="section level3">
 <h3>Problem</h3>
 <p>Browser-based Shiny apps generally cannot freely choose arbitrary
 local export locations without browser download behavior. The requested
@@ -3346,13 +3430,363 @@ met. Streamlit code now delegates to <code>plotverify_core</code> for
 the bulk of computation, but full controller adoption is deferred until
 the Shiny app exists so the Streamlit app keeps shipping. Verify the
 line count after the next pass of Streamlit cleanup.</li>
-<li>⏳ <code>AppState</code> JSON serialization — not yet exercised. Add
-a round-trip test before Milestone 3 so saved-session restoration is
-reliable.</li>
+<li>✅ <code>AppState</code> JSON serialization —
+<code>plotverify_core.serialization</code> round-trips a session through
+a <code>.pvsession</code> zip; <code>tests/test_serialization.py</code>
+covers happy path, EditableOverlay edits, version mismatch, and
+malformed archives.</li>
 <li>⏳ Shiny main module &lt; 1,500 lines, reads/writes
 <code>AppState</code> exclusively through <code>PlotVerifyApp</code> —
 gated on Milestone 3.</li>
 </ul>
+</div>
+</div>
+<div id="part-9-pre-migration-cleanup-audit" class="section level1">
+<h1>Part 9: Pre-Migration Cleanup Audit</h1>
+<div id="purpose-1" class="section level2">
+<h2>Purpose</h2>
+<p>Catalog every piece of code identified as removable <em>without
+changing application behavior</em>, so a single cleanup pass can be
+reviewed and committed before the Shiny migration proper begins. Each
+item below was located by reading the codebase as it stood on
+<strong>2026-05-19</strong> with <code>rg</code>/AST scans; the
+<code>Evidence</code> line records the verification step. If a later
+change re-introduces a use of one of these symbols, the audit is wrong
+for that item — re-verify before deletion.</p>
+<p><strong>Scope rule:</strong> an item belongs here only if all three
+are true: 1. It has zero non-import references in the repo, OR is a test
+file whose coverage is provided elsewhere. 2. Removing it does not
+change any user-visible Streamlit behavior. 3. Removing it does not
+change the pass/fail outcome of the surviving pytest suite.</p>
+<p>Items that <em>look</em> removable but are actually used are listed
+under <strong>§9.6 Do Not Remove</strong> so a future audit doesn’t
+relitigate them.</p>
+</div>
+<div id="unused-imports-mechanical" class="section level2">
+<h2>9.1 Unused imports (mechanical)</h2>
+<p>Pyflakes-style; all are zero-reference outside their own
+<code>from ... import</code> line. Verification command (used for each):
+<code>rg -n &#39;\b&lt;name&gt;\b&#39; &lt;file&gt; | rg -v &#39;^[0-9]+:(from |import )&#39;</code>
+returns no rows.</p>
+<table>
+<colgroup>
+<col width="25%" />
+<col width="25%" />
+<col width="25%" />
+<col width="25%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>File</th>
+<th>Line</th>
+<th>Symbol</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>plotverify_core/app.py</code></td>
+<td>14</td>
+<td><code>Any</code> (from <code>typing</code>)</td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="even">
+<td><code>plotverify_core/app.py</code></td>
+<td>14</td>
+<td><code>replace</code> (from <code>dataclasses</code>)</td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="odd">
+<td><code>plotverify_core/app.py</code></td>
+<td>18</td>
+<td><code>np</code></td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="even">
+<td><code>plotverify_core/app.py</code></td>
+<td>22</td>
+<td><code>detect_axis_frame</code></td>
+<td>0 non-import refs (used in <code>app_auto_axis.py</code>, not
+here)</td>
+</tr>
+<tr class="odd">
+<td><code>plotverify_core/app.py</code></td>
+<td>28</td>
+<td><code>rebuild_result_from_detection</code></td>
+<td>0 non-import refs (used in <code>serialization.py</code>, not
+here)</td>
+</tr>
+<tr class="even">
+<td><code>plotverify_core/app.py</code></td>
+<td>33</td>
+<td><code>hash_bytes</code></td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="odd">
+<td><code>plotverify_core/app.py</code></td>
+<td>43</td>
+<td><code>WorkflowStage</code></td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="even">
+<td><code>axis_pipeline/legacy.py</code></td>
+<td>24</td>
+<td><code>List</code> (from <code>typing</code>)</td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="odd">
+<td><code>axis_pipeline/legacy.py</code></td>
+<td>26</td>
+<td><code>np</code></td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="even">
+<td><code>axis_pipeline/overlay.py</code></td>
+<td>14</td>
+<td><code>Dict</code> (from <code>typing</code>)</td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="odd">
+<td><code>plotverify_core/serialization.py</code></td>
+<td>35</td>
+<td><code>List</code> (from <code>typing</code>)</td>
+<td>0 non-import refs</td>
+</tr>
+<tr class="even">
+<td><code>plotverify_core/overlay_model.py</code></td>
+<td>13</td>
+<td><code>field</code> (from <code>dataclasses</code>)</td>
+<td>0 calls to <code>field(</code> in file</td>
+</tr>
+<tr class="odd">
+<td><code>plotverify_core/series_state.py</code></td>
+<td>9</td>
+<td><code>field</code> (from <code>dataclasses</code>)</td>
+<td>0 calls to <code>field(</code> in file</td>
+</tr>
+</tbody>
+</table>
+<p>Estimated removal: ~13 lines of imports.</p>
+</div>
+<div id="dead-test-files" class="section level2">
+<h2>9.2 Dead test files</h2>
+<p>These are pytest modules that either fail to collect today, or whose
+every assertion is duplicated by a surviving
+<code>tests/test_core_*</code> file that loads the same logic from
+<code>plotverify_core</code> instead of through the
+<code>app_auto_axis</code> re-export shim.</p>
+<div id="already-broken-at-collection" class="section level3">
+<h3>9.2.1 Already broken at collection</h3>
+<ul>
+<li><strong><code>tests/test_colors_pre_refactor.py</code></strong> —
+Imports <code>hex_complement</code> from <code>app_auto_axis</code>,
+which no longer re-exports it.
+<code>python -m pytest --collect-only</code> errors on this file
+(verified). Coverage is provided by
+<code>tests/test_core_no_streamlit.py</code> via
+<code>plotverify_core.colors</code>. <strong>Safe to
+delete.</strong></li>
+<li><strong><code>test_new_pipeline.py</code></strong> (repo root) —
+Hardcodes <code>sys.path.insert(0, &#39;/home/claude/plotverify&#39;)</code>,
+which only existed in the original sandbox. Pytest auto-discovers it and
+errors on collection. CLAUDE.md documents it as a manual tesseract-shim
+runner, not a unit test. <strong>Options:</strong> (a) delete; (b) move
+to a <code>scripts/</code> directory and remove from pytest discovery;
+(c) rename without <code>test_</code> prefix.</li>
+</ul>
+</div>
+<div id="pre-refactor-checkpoints-outcome-of-the-diff-pass" class="section level3">
+<h3>9.2.2 Pre-refactor checkpoints — outcome of the diff pass</h3>
+<p>These were originally written as “pin current behavior before
+extracting” snapshots during Refactor A. The cleanup-PR diff against the
+surviving <code>test_core_*</code> files showed that <strong>only one of
+the four was genuinely duplicated</strong>; the other three carried
+unique behavioral coverage that the audit had assumed lived
+elsewhere.</p>
+<p><strong>Audit correction:</strong>
+<code>tests/test_core_no_streamlit.py</code> is a 40-line subprocess
+smoke test that only asserts <code>callable(compute_calibration)</code>
+/ <code>callable(delta_e_mask)</code> / etc. It does
+<strong>not</strong> verify any values. The original §9.2.2 claim that
+it superseded <code>test_calibration_math_pre_refactor.py</code> and
+<code>test_masking_pre_refactor.py</code> was wrong.</p>
+<p>Outcome by file:</p>
+<ul>
+<li><strong><code>tests/test_csv_io_pre_refactor.py</code> →
+deleted.</strong> Every assertion is mirrored by
+<code>tests/test_core_csv_io.py</code> (which already imports from
+<code>plotverify_core</code>).</li>
+<li><strong><code>tests/test_calibration_math_pre_refactor.py</code> →
+renamed to <code>tests/test_core_calibration_math.py</code></strong> and
+imports repointed from <code>app_auto_axis</code> to
+<code>plotverify_core</code>. Preserves 17 value-correctness tests:
+<code>log10_or_none</code> semantics, <code>compute_calibration</code>
+linear/log/degenerate cases, <code>p1p2_y_disagreement_px</code>,
+<code>px_to_data</code>/<code>data_to_px</code> round-trips,
+<code>P1P2_Y_TOLERANCE_PX == 3.0</code>.</li>
+<li><strong><code>tests/test_masking_pre_refactor.py</code> → renamed to
+<code>tests/test_core_masking.py</code></strong> and imports repointed
+to <code>plotverify_core</code> (<code>delta_e_mask</code>,
+<code>apply_color_mask</code>). Preserves 4 tests: matching-color
+all-set, dissimilar-zero, hue-wrap, in-range.</li>
+<li><strong><code>tests/test_axis_pipeline_pre_refactor.py</code> →
+renamed to <code>tests/test_axis_pipeline_typed_api.py</code></strong>
+(imports were already from <code>axis_pipeline</code>, no repointing
+needed). Preserves 13 tests: 7 <code>parse_numeric_tick</code> parsing
+cases (unicode minus, superscript/caret log10, e-notation, …), 5
+<code>manual_calibration</code> edge cases
+(<code>log10_x_rejects_zero</code>, <code>to_legacy_dict_shape</code>),
+and <code>ocr_available</code> type guard.
+<code>test_typed_tick_edits.py</code> uses
+<code>manual_calibration</code> only as a fixture builder; it does not
+exercise <code>parse_numeric_tick</code> at all.</li>
+</ul>
+<p>Lesson for future audits: an “X is superseded by Y” claim must be
+verified by diffing assertion bodies, not just by matching imported
+symbol names. Smoke-test files (<code>test_core_no_streamlit.py</code>)
+prove a function exists, not that it behaves correctly.</p>
+<p>Net deletion from §9.2.2: 1 test file (~65 lines). Three files
+renamed (no behavior delta).</p>
+</div>
+</div>
+<div id="unreferenced-helpers-and-unused-dataclass-fields" class="section level2">
+<h2>9.3 Unreferenced helpers and unused dataclass fields</h2>
+<ul>
+<li><strong><code>plotverify_core/matching.py:103-105</code></strong> —
+<code>find_pair(result, stem) -&gt; Optional[Tuple[FileEntry, FileEntry]]</code>.
+Evidence: <code>rg -n &#39;find_pair&#39;</code> yields one hit (the
+<code>def</code>). Not in
+<code>plotverify_core/__init__.py.__all__</code>. Was scoped for “look
+up a pair by case-insensitive stem” but no caller materialized;
+<code>MatchResult.pairs</code> is consulted directly. <strong>Safe to
+delete.</strong></li>
+<li><strong><code>plotverify_core/session.py:98-99</code></strong> —
+<code>frame_preview_key: Optional[tuple] = None</code> and
+<code>frame_preview: Any = None</code> on <code>PerFileState</code>.
+Evidence:
+<code>rg -n &#39;\.frame_preview(_key)?\b&#39; plotverify_core app_auto_axis.py tests</code>
+returns 0 hits on the dataclass fields. The Streamlit app uses its own
+global <code>st.session_state.frame_preview_cache</code> (separate from
+the dataclass) — see <code>app_auto_axis.py:452</code>,
+<code>:934</code>. <code>serialization.py:119</code> already documents
+these fields as “transient” and excludes them from save. <strong>Safe to
+delete from the dataclass.</strong> When the Shiny app needs a per-file
+frame preview cache, it can re-add the fields with a typed shape.</li>
+</ul>
+</div>
+<div id="stale-parameters-with-no-read-inside-the-body" class="section level2">
+<h2>9.4 Stale parameters with no read inside the body</h2>
+<ul>
+<li><strong><code>axis_pipeline/legacy.py:89</code></strong> —
+<code>mask_all_text: bool = True</code> parameter on
+<code>auto_detect_axes_ticks_ocr</code>. Comment:
+<code># kept for signature compatibility</code>. Body never reads it.
+Evidence: <code>rg -n &#39;mask_all_text&#39; axis_pipeline/legacy.py</code>
+shows the parameter declaration and nothing else; only other hits are an
+unrelated <code>st.session_state.ocr_mask_all_text</code> toggle in
+<code>app_auto_axis.py:1222</code> which never flows into this call.
+<strong>Caveat:</strong> this is a public-ish legacy API. External
+scripts may pass it as a keyword. Two options:
+<ul>
+<li><strong>(a)</strong> Remove now and bump
+<code>PIPELINE_VERSION</code> to <code>0.2</code>. Lower friction,
+breaks any external caller using the kwarg.</li>
+<li><strong>(b)</strong> Keep until Refactor H Phase 3 (legacy-shim
+deletion), since the whole function is going away then anyway.</li>
+<li>Recommendation: <strong>(b)</strong> — defer. The cost of keeping a
+one-line dead parameter is zero, and we don’t want a
+<code>PIPELINE_VERSION</code> bump on a cosmetic change.</li>
+</ul></li>
+</ul>
+</div>
+<div id="cleanup-pr-actual-outcome" class="section level2">
+<h2>9.5 Cleanup PR — actual outcome</h2>
+<p>Executed 2026-05-19. Pytest before: 150 collected + 2 collection
+errors. Pytest after: 143 collected, <strong>137 passed, 6
+xfailed</strong>, no new failures, same xfail set.</p>
+<ul>
+<li><strong>Unused imports</strong> — 13 lines across 7 files.</li>
+<li><strong>Dead helpers / fields</strong> — <code>find_pair</code> (~3
+lines), <code>PerFileState.frame_preview_key</code> +
+<code>.frame_preview</code> (~2 lines);
+<code>serialization.py:119</code> docstring also tightened.</li>
+<li><strong>Broken-at-collection tests</strong> —
+<code>test_colors_pre_refactor.py</code> deleted;
+<code>test_new_pipeline.py</code> relocated to
+<code>scripts/run_pipeline_with_tesseract.py</code> with a portable
+<code>sys.path.insert(Path(__file__).resolve().parent.parent)</code>;
+<code>CLAUDE.md</code> updated.</li>
+<li><strong>Pre-refactor tests</strong> —
+<code>test_csv_io_pre_refactor.py</code> deleted (~65 lines); the other
+three renamed + import-repointed (see §9.2.2 above).</li>
+<li><strong>Deferred until Refactor H Phase 3:</strong>
+<code>mask_all_text</code> parameter; <code>axis_auto.py</code>;
+<code>ocr_axis.py</code>; the bulk of
+<code>axis_pipeline/legacy.py</code>.</li>
+</ul>
+</div>
+<div id="do-not-remove" class="section level2">
+<h2>9.6 Do Not Remove</h2>
+<p>Symbols/files initially suspected but verified as still used. Listed
+so a future audit doesn’t have to re-verify.</p>
+<ul>
+<li><strong><code>axis_auto.py</code>, <code>ocr_axis.py</code></strong>
+— Imported by <code>app_auto_axis.py:35-46</code>. Removal is Refactor H
+Phase 3 work and is gated on the Shiny app being the primary UI.</li>
+<li><strong><code>axis_pipeline/legacy.py</code></strong> as a whole —
+<code>rebuild_result_from_detection</code> is called by
+<code>plotverify_core/serialization.py:220</code>;
+<code>update_result_from_tick_edits</code> is called by
+<code>plotverify_core/app.py:213</code> and
+<code>app_auto_axis.py</code>;
+<code>update_detection_from_tick_tables</code> is called by
+<code>app_auto_axis.py:1078</code>. Deletion candidates inside this file
+are limited to the lines listed in §9.1 and §9.4.</li>
+<li><strong><code>frame_preview_run_count</code> Streamlit
+state</strong> (<code>app_auto_axis.py:453, 946-947, 1334</code>) —
+surfaced in the “Preview diagnostics” expander. Diagnostic UI, not dead
+code.</li>
+<li><strong>Symbols in <code>plotverify_core/__init__.py</code>
+<code>__all__</code></strong> that the AST scan flagged — they are
+intentional public re-exports; the AST tool doesn’t model
+<code>__all__</code>. Do not remove based on AST output for
+<code>__init__.py</code> files.</li>
+<li><strong><code>bbox is None</code> guard branches in
+<code>app_auto_axis.py</code></strong> (<code>:1277</code>,
+<code>:1342-1347</code>, <code>:1462</code>) — these are Bug #18 (manual
+mode) tolerance, not workarounds for a fixed bug. They must stay so
+manual calibration without <code>detect_axis_frame</code> keeps
+rendering.</li>
+<li><strong><code>csv_io.py:87</code></strong>
+<code>df[&quot;series_color&quot;] = df[&quot;series_color&quot;].astype(object)</code> —
+this is a fix for the pandas all-NaN→float64 inference, exercised by
+<code>tests/test_serialization.py</code> round-trips. Required.</li>
+</ul>
+</div>
+<div id="recommended-execution-order-for-the-cleanup-pr" class="section level2">
+<h2>9.7 Recommended execution order for the cleanup PR</h2>
+<ol style="list-style-type: decimal">
+<li>Delete the imports listed in §9.1 (one commit per file, or one
+commit total — they’re independent).</li>
+<li>Delete <code>find_pair</code> (§9.3) and the two
+<code>PerFileState</code> fields (§9.3).</li>
+<li>Decide on <code>test_new_pipeline.py</code> (§9.2.1) — recommended:
+rename to <code>scripts/run_pipeline_with_tesseract.py</code> and update
+<code>CLAUDE.md</code> accordingly so the manual-run instruction still
+works.</li>
+<li>Delete <code>tests/test_colors_pre_refactor.py</code> (§9.2.1).</li>
+<li>Diff each <code>*_pre_refactor.py</code> test against its
+<code>test_core_*</code> replacement (§9.2.2); delete only after diff
+confirms no unique assertion is lost.</li>
+<li>Run the full suite: <code>python -m pytest</code>. Expected delta:
+same pass count as before deletion, minus the deleted tests. No xfailed
+count change.</li>
+<li>Run the Streamlit app and smoke-test: upload → run detection →
+manual override → apply calibration → export CSV. No visible
+difference.</li>
+</ol>
+<p>After this PR lands, revisit §9.4 only once Refactor H Phase 3
+begins.</p>
 </div>
 </div>
 
