@@ -1,0 +1,396 @@
+{
+  "success": true,
+  "confidence": 0.8331664587547954,
+  "mode": "ocr_masked_open_axes",
+  "bbox": [
+    510,
+    118,
+    1356,
+    596
+  ],
+  "p1": [
+    720,
+    405
+  ],
+  "p2": [
+    1143,
+    405
+  ],
+  "p3": [
+    720,
+    214
+  ],
+  "p1_data_x": 29,
+  "p2_data_x": 85,
+  "p3_data_x": 29.022116738824266,
+  "p1_data_y": -60,
+  "p3_data_y": -20,
+  "x_ticks": [
+    [
+      561,
+      596,
+      1
+    ],
+    [
+      614,
+      596,
+      1
+    ],
+    [
+      667,
+      596,
+      1
+    ],
+    [
+      720,
+      596,
+      1
+    ],
+    [
+      773,
+      596,
+      1
+    ],
+    [
+      825,
+      596,
+      1
+    ],
+    [
+      878,
+      596,
+      1
+    ],
+    [
+      931,
+      596,
+      1
+    ],
+    [
+      984,
+      596,
+      1
+    ],
+    [
+      1037,
+      596,
+      1
+    ],
+    [
+      1090,
+      596,
+      1
+    ],
+    [
+      1143,
+      596,
+      1
+    ],
+    [
+      1196,
+      596,
+      1
+    ],
+    [
+      1248,
+      596,
+      1
+    ],
+    [
+      1302,
+      596,
+      1
+    ]
+  ],
+  "y_ticks": [
+    [
+      510,
+      214,
+      1
+    ],
+    [
+      510,
+      309,
+      1
+    ],
+    [
+      510,
+      405,
+      1
+    ],
+    [
+      510,
+      501,
+      1
+    ]
+  ],
+  "x_tick_table": [
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "29",
+      "cleaned_text": "29",
+      "value": 29,
+      "pixel_position": 720,
+      "fixed_axis_pixel": 596,
+      "ocr_confidence": 1,
+      "pair_distance_px": 0.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        690,
+        628,
+        749,
+        669
+      ],
+      "grid_index": 3
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "57",
+      "cleaned_text": "57",
+      "value": 57,
+      "pixel_position": 931,
+      "fixed_axis_pixel": 596,
+      "ocr_confidence": 0.9999992413568111,
+      "pair_distance_px": 1,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        904,
+        630,
+        960,
+        669
+      ],
+      "grid_index": 7
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "85",
+      "cleaned_text": "85",
+      "value": 85,
+      "pixel_position": 1143,
+      "fixed_axis_pixel": 596,
+      "ocr_confidence": 1,
+      "pair_distance_px": 0.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        1114,
+        628,
+        1173,
+        669
+      ],
+      "grid_index": 11
+    },
+    {
+      "include": false,
+      "axis": "x",
+      "raw_text": "7",
+      "cleaned_text": "7",
+      "value": 7,
+      "pixel_position": 1302,
+      "fixed_axis_pixel": 596,
+      "ocr_confidence": 0.7078303380712079,
+      "pair_distance_px": 23.5,
+      "parse_status": "parsed",
+      "status": "monotonicity_violation",
+      "flag": "",
+      "bbox": [
+        1293,
+        598,
+        1358,
+        618
+      ],
+      "grid_index": 14
+    }
+  ],
+  "y_tick_table": [
+    {
+      "include": true,
+      "axis": "y",
+      "raw_text": "-20",
+      "cleaned_text": "-20",
+      "value": -20,
+      "pixel_position": 214,
+      "fixed_axis_pixel": 510,
+      "ocr_confidence": 0.47525638341903687,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        413,
+        190,
+        504,
+        235
+      ],
+      "grid_index": 0
+    },
+    {
+      "include": true,
+      "axis": "y",
+      "raw_text": "-60",
+      "cleaned_text": "-60",
+      "value": -60,
+      "pixel_position": 405,
+      "fixed_axis_pixel": 510,
+      "ocr_confidence": 0.9997348888232357,
+      "pair_distance_px": 1.5,
+      "parse_status": "parsed",
+      "status": "paired_to_tick_mark",
+      "flag": "",
+      "bbox": [
+        414,
+        382,
+        505,
+        425
+      ],
+      "grid_index": 2
+    }
+  ],
+  "x_grid_fit": {
+    "spacing": 53,
+    "origin": 560.2666666666667,
+    "fitted_positions": [
+      561,
+      614,
+      667,
+      720,
+      773,
+      825,
+      878,
+      931,
+      984,
+      1037,
+      1090,
+      1143,
+      1196,
+      1248,
+      1302
+    ],
+    "fitted_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14
+    ],
+    "rejected_positions": [],
+    "grid_residuals": [
+      0.7333333333333485,
+      0.7333333333333485,
+      0.7333333333333485,
+      0.7333333333333485,
+      0.7333333333333485,
+      -0.2666666666666515,
+      -0.2666666666666515,
+      -0.2666666666666515,
+      -0.2666666666666515,
+      -0.2666666666666515,
+      -0.2666666666666515,
+      -0.2666666666666515,
+      -0.2666666666666515,
+      -1.2666666666666515,
+      -0.2666666666666515
+    ],
+    "n_grid_cells": 15,
+    "success": true
+  },
+  "y_grid_fit": {
+    "spacing": 96,
+    "origin": 213.25,
+    "fitted_positions": [
+      214,
+      309,
+      405,
+      501
+    ],
+    "fitted_indices": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "rejected_positions": [],
+    "grid_residuals": [
+      0.75,
+      -0.25,
+      -0.25,
+      -0.25
+    ],
+    "n_grid_cells": 4,
+    "success": true
+  },
+  "x_calibration": {
+    "scale": 0.13238746022638362,
+    "offset": -66.29685462417194,
+    "n_points": 3,
+    "method": "ols",
+    "rmse_px": 0.23570247994456328,
+    "rmse_data": 0.031204052688920854,
+    "log_likelihood": null,
+    "slope_se": 0.00018069488367917268,
+    "offset_se": 0.17115567162601072,
+    "df_t": null,
+    "log_base": null
+  },
+  "y_calibration": {
+    "scale": -0.2094240837696335,
+    "offset": 24.816753926701573,
+    "n_points": 2,
+    "method": "two_point",
+    "rmse_px": 0,
+    "rmse_data": 0,
+    "log_likelihood": null,
+    "slope_se": null,
+    "offset_se": null,
+    "df_t": null,
+    "log_base": null
+  },
+  "ocr_record_count": 24,
+  "ocr_enabled": true,
+  "warnings": [
+    "Right plot border not confidently detected; using x-axis extent as the right edge.",
+    "Medium-confidence calibration. Review the diagnostic overlay."
+  ],
+  "diagnostics": {
+    "phase_a_record_count": 18,
+    "phase_a_oversized_filtered": 0,
+    "axis_confidence": 0.88,
+    "y_band_extra_used": 117,
+    "phase_b_record_count": 5,
+    "x_band_extra_used": 71,
+    "phase_c_record_count": 7,
+    "combined_record_count": 24,
+    "x_tick_candidates_outward": 15,
+    "x_tick_candidates_inward": 0,
+    "y_tick_candidates_outward": 4,
+    "y_tick_candidates_inward": 2,
+    "x_label_candidates": 7,
+    "y_label_candidates": 3,
+    "x_tick_detection_mode": "outward",
+    "y_tick_detection_mode": "outward",
+    "x_tick_raw_count": 15,
+    "y_tick_raw_count": 4,
+    "x_grid_kept": 15,
+    "y_grid_kept": 4,
+    "x_grid_rejected": 0,
+    "y_grid_rejected": 0
+  }
+}

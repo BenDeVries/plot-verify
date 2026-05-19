@@ -1,0 +1,163 @@
+{
+  "success": false,
+  "confidence": 0,
+  "mode": "ocr_masked_boxed",
+  "bbox": [
+    73,
+    25,
+    506,
+    299
+  ],
+  "p1": [
+    356,
+    299
+  ],
+  "p2": [
+    501,
+    299
+  ],
+  "p3": null,
+  "p1_data_x": 10,
+  "p2_data_x": 100,
+  "p3_data_x": null,
+  "p1_data_y": null,
+  "p3_data_y": null,
+  "x_ticks": [
+    [
+      356,
+      299,
+      1
+    ],
+    [
+      369,
+      299,
+      1
+    ],
+    [
+      501,
+      299,
+      1
+    ]
+  ],
+  "y_ticks": [],
+  "x_tick_table": [
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "101",
+      "cleaned_text": "10^1",
+      "value": 10,
+      "pixel_position": 356,
+      "fixed_axis_pixel": 299,
+      "ocr_confidence": 0.979076458980172,
+      "pair_distance_px": 6.5,
+      "parse_status": "deconcat_log10",
+      "status": "paired_to_tick_mark",
+      "flag": "deconcat:101→10^1",
+      "bbox": [
+        351,
+        303,
+        374,
+        321
+      ],
+      "grid_index": 0
+    },
+    {
+      "include": true,
+      "axis": "x",
+      "raw_text": "102",
+      "cleaned_text": "10^2",
+      "value": 100,
+      "pixel_position": 501,
+      "fixed_axis_pixel": 299,
+      "ocr_confidence": 0.9999960769466525,
+      "pair_distance_px": 6.5,
+      "parse_status": "deconcat_log10",
+      "status": "paired_to_tick_mark",
+      "flag": "deconcat:102→10^2",
+      "bbox": [
+        495,
+        303,
+        520,
+        321
+      ],
+      "grid_index": 11
+    }
+  ],
+  "y_tick_table": [],
+  "x_grid_fit": {
+    "spacing": 13,
+    "origin": 356.6666666666667,
+    "fitted_positions": [
+      356,
+      369,
+      501
+    ],
+    "fitted_indices": [
+      0,
+      1,
+      11
+    ],
+    "rejected_positions": [],
+    "grid_residuals": [
+      -0.6666666666666856,
+      -0.6666666666666856,
+      1.3333333333333144
+    ],
+    "n_grid_cells": 12,
+    "success": true
+  },
+  "y_grid_fit": {
+    "spacing": 0,
+    "origin": 0,
+    "fitted_positions": [],
+    "fitted_indices": [],
+    "rejected_positions": [],
+    "grid_residuals": [],
+    "n_grid_cells": 0,
+    "success": false
+  },
+  "x_calibration": {
+    "scale": 0.6206896551724138,
+    "offset": -210.96551724137933,
+    "n_points": 2,
+    "method": "two_point",
+    "rmse_px": 0,
+    "rmse_data": 0,
+    "log_likelihood": null,
+    "slope_se": null,
+    "offset_se": null,
+    "df_t": null,
+    "log_base": null
+  },
+  "y_calibration": null,
+  "ocr_record_count": 10,
+  "ocr_enabled": true,
+  "warnings": [
+    "No y-tick labels were paired: 3 numeric label(s) survived but no geometric ticks were grid-fitted on this axis. The axis may have ticks too sparse or irregular for the modal-spacing fit."
+  ],
+  "diagnostics": {
+    "phase_a_record_count": 6,
+    "phase_a_oversized_filtered": 0,
+    "axis_confidence": 0.98,
+    "y_band_extra_used": 43,
+    "phase_b_record_count": 4,
+    "x_band_extra_used": 22,
+    "phase_c_record_count": 5,
+    "combined_record_count": 10,
+    "x_tick_candidates_outward": 3,
+    "x_tick_candidates_inward": 1,
+    "y_tick_candidates_outward": 0,
+    "y_tick_candidates_inward": 0,
+    "x_label_candidates": 4,
+    "y_label_candidates": 3,
+    "x_tick_detection_mode": "outward",
+    "y_tick_detection_mode": "failed",
+    "x_tick_raw_count": 3,
+    "y_tick_raw_count": 0,
+    "x_grid_kept": 3,
+    "y_grid_kept": 0,
+    "x_grid_rejected": 0,
+    "y_grid_rejected": 0
+  }
+}

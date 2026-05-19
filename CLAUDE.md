@@ -14,10 +14,10 @@ streamlit run app_auto_axis.py
 
 ## Running the pipeline in a script (with tesseract fallback)
 
-EasyOCR requires a model download; in sandboxes or CI use the tesseract shim defined in `test_new_pipeline.py`:
+EasyOCR requires a model download; in sandboxes or CI use the tesseract shim defined in `scripts/run_pipeline_with_tesseract.py`:
 
 ```bash
-python test_new_pipeline.py
+python scripts/run_pipeline_with_tesseract.py
 ```
 
 The shim implements the same `OCRRunner` callable signature, so it is a drop-in for `run_calibration(..., ocr_runner=tesseract_runner)`.

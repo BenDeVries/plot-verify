@@ -15,12 +15,16 @@ from axis_pipeline import parse_numeric_tick
 from axis_pipeline.legacy import (
     auto_detect_axes_ticks_ocr,
     build_ocr_debug_overlay,
+    rebuild_result_from_detection,
     update_detection_from_tick_tables,
+    update_result_from_tick_edits,
 )
 
 __all__ = [
     "auto_detect_axes_ticks_ocr",
     "build_ocr_debug_overlay",
+    "rebuild_result_from_detection",
     "update_detection_from_tick_tables",
+    "update_result_from_tick_edits",
     "parse_numeric_tick",
 ]

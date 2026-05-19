@@ -11,7 +11,7 @@ Shows everything the pipeline saw and decided:
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -29,13 +29,17 @@ def render_overlay(
     show_frame: bool = True,
 ) -> np.ndarray:
     overlay = img_bgr.copy()
-    if result is None or result.bbox is None:
+    if result is None:
         return cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
 
+    # bbox-dependent decorations (frame rectangle, geometric tick markers,
+    # grid-fit markers, Phase B/C band shading) are skipped when bbox is None.
+    # Manual calibration produces no bbox, paired ticks, or geometric ticks;
+    # only the P1/P2/P3 anchors are drawn in that case.
     bbox = result.bbox
 
-    # Phase B/C scan windows (light shading).
-    if show_band_windows:
+    # Phase B/C scan windows (light shading) — requires bbox.
+    if show_band_windows and bbox is not None:
         layer = overlay.copy()
         if result.config and result.config.enable_phase_b_y_band:
             y_extra = int(result.diagnostics.get("y_band_extra_used", result.config.y_band_extra_px))
@@ -47,7 +51,7 @@ def render_overlay(
             cv2.rectangle(layer, (xb[0], xb[1]), (xb[2], xb[3]), (200, 220, 240), -1)
         overlay = cv2.addWeighted(layer, 0.20, overlay, 0.80, 0)
 
-    # OCR text boxes.
+    # OCR text boxes (independent of bbox; empty list in manual mode).
     for rec in result.ocr_records:
         x0, y0, x1, y1 = [int(v) for v in rec.bbox]
         if rec.phase == OCRPhase.Y_BAND.value or rec.phase == OCRPhase.X_BAND.value:
@@ -56,12 +60,12 @@ def render_overlay(
             color = (0, 140, 0) if rec.is_numeric else (170, 170, 170)
         cv2.rectangle(overlay, (x0, y0), (x1, y1), color, 1)
 
-    # Plot frame.
-    if show_frame:
+    # Plot frame — requires bbox.
+    if show_frame and bbox is not None:
         cv2.rectangle(overlay, (bbox.left, bbox.top), (bbox.right, bbox.bottom), (0, 0, 200), 2)
 
-    # Geometric ticks (raw): light blue.
-    if show_grid_rejected:
+    # Geometric ticks (raw): light blue — requires bbox.
+    if show_grid_rejected and bbox is not None:
         for x in result.x_geometric_ticks:
             cv2.drawMarker(overlay, (int(round(x)), int(bbox.bottom)),
                            (210, 180, 100), markerType=cv2.MARKER_TILTED_CROSS,
@@ -71,17 +75,18 @@ def render_overlay(
                            (210, 180, 100), markerType=cv2.MARKER_TILTED_CROSS,
                            markerSize=8, thickness=1)
 
-    # Grid-fit kept positions: bright green.
-    if result.x_grid_fit:
-        for x in result.x_grid_fit.fitted_positions:
-            cv2.drawMarker(overlay, (int(round(x)), int(bbox.bottom)),
-                           (0, 255, 0), markerType=cv2.MARKER_CROSS,
-                           markerSize=14, thickness=2)
-    if result.y_grid_fit:
-        for y in result.y_grid_fit.fitted_positions:
-            cv2.drawMarker(overlay, (int(bbox.left), int(round(y))),
-                           (0, 255, 0), markerType=cv2.MARKER_CROSS,
-                           markerSize=14, thickness=2)
+    # Grid-fit kept positions: bright green — requires bbox.
+    if bbox is not None:
+        if result.x_grid_fit:
+            for x in result.x_grid_fit.fitted_positions:
+                cv2.drawMarker(overlay, (int(round(x)), int(bbox.bottom)),
+                               (0, 255, 0), markerType=cv2.MARKER_CROSS,
+                               markerSize=14, thickness=2)
+        if result.y_grid_fit:
+            for y in result.y_grid_fit.fitted_positions:
+                cv2.drawMarker(overlay, (int(bbox.left), int(round(y))),
+                               (0, 255, 0), markerType=cv2.MARKER_CROSS,
+                               markerSize=14, thickness=2)
 
     # Pairings: orange line from label center to tick.
     for t in result.x_paired_ticks:

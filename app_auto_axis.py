@@ -8,11 +8,11 @@ Run with:
     streamlit run app.py
 """
 
-import colorsys
 import hashlib
 import io
 import os
 import tempfile
+import warnings as _py_warnings
 
 import cv2
 import numpy as np
@@ -23,8 +23,22 @@ import streamlit as st
 from PIL import Image
 from scipy.interpolate import PchipInterpolator
 
+# Silence deprecation warnings emitted by the dict-shaped legacy shims; the
+# Streamlit app's transition to the typed API is being done incrementally and
+# we don't want users to see the migration noise in their console.
+_py_warnings.filterwarnings(
+    "ignore",
+    category=DeprecationWarning,
+    module="axis_pipeline.legacy",
+)
+
 from axis_auto import auto_detect_axes_and_ticks, build_diagnostic_overlay
-from ocr_axis import auto_detect_axes_ticks_ocr, build_ocr_debug_overlay, update_detection_from_tick_tables
+from ocr_axis import (
+    auto_detect_axes_ticks_ocr,
+    build_ocr_debug_overlay,
+    rebuild_result_from_detection,
+    update_detection_from_tick_tables,
+)
 
 # Direct pipeline access for the manual-band preview tab. The legacy shims
 # above wrap the same package; using it directly here gives us the typed
@@ -32,6 +46,8 @@ from ocr_axis import auto_detect_axes_ticks_ocr, build_ocr_debug_overlay, update
 from axis_pipeline import (
     CalibrationConfig,
     detect_axis_frame,
+    manual_calibration,
+    ocr_available,
     render_band_preview,
     render_overlay,
     run_calibration,
@@ -39,131 +55,34 @@ from axis_pipeline import (
     y_label_band as _y_label_band,
 )
 
-
-REQUIRED_COLUMNS = ["series", "x", "y", "y_err_lower", "y_err_upper"]
-FALLBACK_HEX = "#888888"
-rng = np.random.default_rng(12345)
-
-
-# ---------------------------------------------------------------------------
-# Color helpers
-# ---------------------------------------------------------------------------
-
-def is_valid_hex(s):
-    """Return True if ``s`` is a 6-digit hex color string (with or without #)."""
-    if not isinstance(s, str):
-        return False
-    h = s.lstrip("#")
-    if len(h) != 6:
-        return False
-    try:
-        int(h, 16)
-    except ValueError:
-        return False
-    return True
-
-
-def hex_to_hsv_opencv(hex_color):
-    """Convert hex color string to OpenCV HSV (H: 0-179, S: 0-255, V: 0-255)."""
-    hex_color = hex_color.lstrip("#")
-    if len(hex_color) != 6:
-        raise ValueError(f"Invalid hex color: {hex_color!r}")
-    r, g, b = [int(hex_color[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
-    h, s, v = colorsys.rgb_to_hsv(r, g, b)
-    return int(round(h * 179)), int(round(s * 255)), int(round(v * 255))
+# UI-agnostic core (Refactor A). Pure logic — no Streamlit imports.
+from plotverify_core import (
+    FALLBACK_HEX,
+    LARGE_IMAGE_DOWNSCALE_EDGE,
+    LARGE_IMAGE_MAX_BYTES,
+    LARGE_IMAGE_MAX_EDGE,
+    P1P2_Y_TOLERANCE_PX,
+    SeriesState,
+    apply_color_mask,
+    compute_calibration,
+    data_to_px,
+    decode_and_maybe_downscale,
+    delta_e_mask as _delta_e_mask,
+    hex_to_bgr,
+    hex_to_hsv_opencv,
+    init_series_states,
+    is_valid_hex,
+    load_csv as _core_load_csv,
+    log10_or_none as _log10_or_none,
+    px_to_data,
+)
 
 
-def hex_to_bgr(hex_color):
-    """Convert hex color string to a BGR int tuple (for OpenCV drawing)."""
-    if not is_valid_hex(hex_color):
-        return (136, 136, 136)
-    h = hex_color.lstrip("#")
-    r = int(h[0:2], 16)
-    g = int(h[2:4], 16)
-    b = int(h[4:6], 16)
-    return (b, g, r)
-
-
-def _delta_e_mask(img_bgr, hex_color, threshold=10.0):
-    """Return a binary mask of pixels within ``threshold`` ΔE76 of ``hex_color``.
-
-    Works in CIE Lab — perceptually uniform, so equal distance = equal perceived
-    colour difference.  Much more reliable than a 3-axis HSV box, especially for
-    colours that are close to grey or near the hue wrap-around.
-    """
-    img_lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2Lab).astype(np.float32)
-
-    h = hex_color.lstrip("#")
-    rgb = np.uint8([[[int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)]]])
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    target_lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2Lab).astype(np.float32)[0, 0]
-
-    delta_e = np.sqrt(((img_lab - target_lab) ** 2).sum(axis=2))
-    mask = (delta_e < threshold).astype(np.uint8) * 255
-
-    kernel = np.ones((3, 3), np.uint8)
-    return cv2.dilate(mask, kernel, iterations=2)
-
-
-def hex_complement(hex_color: str) -> str:
-    """Return the hue-opposite color of hex_color.
-    Extremely dark colors return a random light color instead.
-    """
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    hue, sat, val = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
-    if val < 0.25:
-        r, g, b = colorsys.hsv_to_rgb(rng.random(), rng.uniform(0.25, 0.55), rng.uniform(0.9, 1.0))
-        return "#{:02x}{:02x}{:02x}".format(
-            int(round(r * 255)),
-            int(round(g * 255)),
-            int(round(b * 255)),
-        )
-    comp_hue = (hue + 0.5) % 1.0
-    cr, cg, cb = colorsys.hsv_to_rgb(comp_hue, sat, val)
-    return "#{:02x}{:02x}{:02x}".format(
-        int(round(cr * 255)),
-        int(round(cg * 255)),
-        int(round(cb * 255)),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Mask + image ops
-# ---------------------------------------------------------------------------
-
-def apply_color_mask(img_bgr, h_min, h_max, s_min, s_max, v_min, v_max):
-    """Build a binary mask isolating pixels whose HSV falls within the given range.
-
-    Handles hue wraparound: when h_min > h_max the range is interpreted as
-    [h_min, 179] ∪ [0, h_max], which is needed for reds that span 0/179.
-    Dilates the result with a 3x3 kernel for 2 iterations to fill the
-    anti-aliasing fringe around plotted lines.
-    """
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-
-    if h_min <= h_max:
-        mask = cv2.inRange(
-            hsv,
-            np.array([h_min, s_min, v_min], dtype=np.uint8),
-            np.array([h_max, s_max, v_max], dtype=np.uint8),
-        )
-    else:
-        mask1 = cv2.inRange(
-            hsv,
-            np.array([h_min, s_min, v_min], dtype=np.uint8),
-            np.array([179, s_max, v_max], dtype=np.uint8),
-        )
-        mask2 = cv2.inRange(
-            hsv,
-            np.array([0, s_min, v_min], dtype=np.uint8),
-            np.array([h_max, s_max, v_max], dtype=np.uint8),
-        )
-        mask = cv2.bitwise_or(mask1, mask2)
-
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=2)
-    return mask
+# Module constants (REQUIRED_COLUMNS, LARGE_IMAGE_*), color/mask/calibration
+# math, image decode, CSV validation, and SeriesState are imported from
+# plotverify_core at the top of this module. The ``cached_*`` Streamlit
+# wrappers below delegate to those pure functions but layer on Streamlit's
+# per-image caching.
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
@@ -189,57 +108,6 @@ def cached_delta_e_mask(image_hash, hex_color, threshold, _img_bgr):
 def cached_mask(image_hash, h_min, h_max, s_min, s_max, v_min, v_max, _img_bgr):
     """Cache HSV color masks keyed on image hash + slider values."""
     return apply_color_mask(_img_bgr, h_min, h_max, s_min, s_max, v_min, v_max)
-
-
-# ---------------------------------------------------------------------------
-# Calibration
-# ---------------------------------------------------------------------------
-
-def compute_calibration(p1_px_x, p1_px_y, p2_px_x, p2_px_y,
-                        p3_px_x, p3_px_y,
-                        p1_data_x, p2_data_x, p3_data_y, y_baseline):
-    """Compute the affine pixel↔data transform from the three calibration points.
-
-    Returns a dict with keys ``x_scale``, ``x_offset``, ``y_scale``,
-    ``y_offset``, ``applied`` — or ``None`` if the inputs are degenerate.
-    """
-    if abs(p2_px_x - p1_px_x) < 1e-9:
-        return None
-
-    x_scale = (p2_data_x - p1_data_x) / (p2_px_x - p1_px_x)
-    x_offset = p1_data_x - x_scale * p1_px_x
-
-    x_axis_pixel_y = (p1_px_y + p2_px_y) / 2.0
-    if abs(p3_px_y - x_axis_pixel_y) < 1e-9:
-        return None
-
-    y_scale = (p3_data_y - y_baseline) / (p3_px_y - x_axis_pixel_y)
-    y_offset = p3_data_y - y_scale * p3_px_y
-
-    if not (np.isfinite(x_scale) and np.isfinite(y_scale)):
-        return None
-    if abs(x_scale) < 1e-12 or abs(y_scale) < 1e-12:
-        return None
-
-    return {
-        "x_scale": float(x_scale),
-        "x_offset": float(x_offset),
-        "y_scale": float(y_scale),
-        "y_offset": float(y_offset),
-        "applied": True,
-    }
-
-
-def px_to_data(px_x, px_y, cal):
-    """Convert pixel coordinates to data coordinates."""
-    return (cal["x_scale"] * px_x + cal["x_offset"],
-            cal["y_scale"] * px_y + cal["y_offset"])
-
-
-def data_to_px(data_x, data_y, cal):
-    """Convert data coordinates to pixel coordinates."""
-    return ((data_x - cal["x_offset"]) / cal["x_scale"],
-            (data_y - cal["y_offset"]) / cal["y_scale"])
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +313,17 @@ def _update_calibration_masked_image():
 def build_overlay_figure(img_rgb, df, series_states, cal):
     """Return a Plotly figure: the calibrated image as a background with
     extracted-data scatter traces (with error bars) drawn on top in data coords.
+
+    Honors ``cal["x_log_base"]`` / ``cal["y_log_base"]``: when set to 10, the
+    corresponding Plotly axis is configured as ``type="log"`` and the image's
+    layout coordinates are converted to log10 units (Plotly's layout-image
+    coordinates use log10 of the data value when the axis is log-scaled).
+
+    Data extraction is delegated to ``plotverify_core.build_overlay_traces``;
+    this function is now only responsible for the Plotly rendering.
     """
+    from plotverify_core import build_overlay_traces
+
     h, w = img_rgb.shape[:2]
 
     x_left = px_to_data(0, 0, cal)[0]
@@ -453,94 +331,91 @@ def build_overlay_figure(img_rgb, df, series_states, cal):
     y_top = px_to_data(0, 0, cal)[1]
     y_bottom = px_to_data(0, h, cal)[1]
 
+    x_log_base = cal.get("x_log_base")
+    y_log_base = cal.get("y_log_base")
+
     fig = go.Figure()
 
     pil_img = Image.fromarray(img_rgb)
+    # Plotly's layout-image x/y/sizex/sizey are specified in log10 of the data
+    # value when the corresponding axis is set to type="log".
+    img_x = min(x_left, x_right)
+    img_y = max(y_top, y_bottom)
+    img_sizex = abs(x_right - x_left)
+    img_sizey = abs(y_top - y_bottom)
+    if x_log_base and x_left > 0 and x_right > 0:
+        img_x = float(np.log10(min(x_left, x_right)))
+        img_sizex = float(abs(np.log10(x_right) - np.log10(x_left)))
+    if y_log_base and y_top > 0 and y_bottom > 0:
+        img_y = float(np.log10(max(y_top, y_bottom)))
+        img_sizey = float(abs(np.log10(y_top) - np.log10(y_bottom)))
     fig.add_layout_image(
         dict(
             source=pil_img,
-            xref="x",
-            yref="y",
-            x=min(x_left, x_right),
-            y=max(y_top, y_bottom),
-            sizex=abs(x_right - x_left),
-            sizey=abs(y_top - y_bottom),
-            xanchor="left",
-            yanchor="top",
+            xref="x", yref="y",
+            x=img_x, y=img_y,
+            sizex=img_sizex, sizey=img_sizey,
+            xanchor="left", yanchor="top",
             sizing="stretch",
-            opacity=1.0,
-            layer="below",
+            opacity=1.0, layer="below",
         )
     )
 
-    for series_name in df["series"].drop_duplicates().tolist():
-        sdf = df[df["series"] == series_name]
-        color_hex = sdf["series_color"].iloc[0]
-        if not is_valid_hex(color_hex):
-            color_hex = FALLBACK_HEX
-        overlay_hex = hex_complement(color_hex)
+    # Build series visibility from Streamlit widget keys; the trace builder
+    # itself reads no st.session_state.
+    series_visibility = {
+        name: bool(st.session_state.get(f"vis_{name}", True))
+        for name in df["series"].drop_duplicates().tolist()
+    }
+    traces = build_overlay_traces(df, series_visibility=series_visibility)
 
-        y_vals = sdf["y"].to_numpy(dtype=float)
-        eu = sdf["y_err_upper"].to_numpy(dtype=float)
-        el = sdf["y_err_lower"].to_numpy(dtype=float)
-        has_err = np.isfinite(eu) & np.isfinite(el)
-
-        if has_err.any():
-            arr_plus = np.where(has_err, eu - y_vals, 0.0)
-            arr_minus = np.where(has_err, y_vals - el, 0.0)
-            error_y = dict(
-                type="data", symmetric=False,
-                array=arr_plus, arrayminus=arr_minus,
-                color=overlay_hex, thickness=1.5, width=4,
-            )
-        else:
-            error_y = None
-
-        state = series_states.get(series_name, {})
-        visible = True if st.session_state.get(f"vis_{series_name}", True) else "legendonly"
-
-        # Ribbon: fill between y_err_lower and y_err_upper where both are finite.
-        if has_err.any():
-            h_str = overlay_hex.lstrip("#")
+    for trace in traces:
+        plot_visible = True if trace.visible else "legendonly"
+        if trace.has_err.any():
+            h_str = trace.color_hex.lstrip("#")
             fill_rgba = "rgba({},{},{},0.2)".format(
                 int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
             )
-            x_rib = sdf["x"].to_numpy(dtype=float)[has_err]
-            y_upper = eu[has_err]
-            y_lower = el[has_err]
-            sort_idx = np.argsort(x_rib)
-            x_rib = x_rib[sort_idx]
-            y_upper = y_upper[sort_idx]
-            y_lower = y_lower[sort_idx]
             fig.add_trace(go.Scatter(
-                x=x_rib, y=y_upper,
+                x=trace.ribbon_x, y=trace.ribbon_y_upper,
                 mode="lines", line=dict(width=0),
-                legendgroup=str(series_name),
-                showlegend=False, visible=visible, hoverinfo="skip",
+                legendgroup=trace.series,
+                showlegend=False, visible=plot_visible, hoverinfo="skip",
             ))
             fig.add_trace(go.Scatter(
-                x=x_rib, y=y_lower,
+                x=trace.ribbon_x, y=trace.ribbon_y_lower,
                 mode="lines", line=dict(width=0),
                 fill="tonexty", fillcolor=fill_rgba,
-                legendgroup=str(series_name),
-                showlegend=False, visible=visible, hoverinfo="skip",
+                legendgroup=trace.series,
+                showlegend=False, visible=plot_visible, hoverinfo="skip",
             ))
 
         fig.add_trace(go.Scatter(
-            x=sdf["x"],
-            y=sdf["y"],
+            x=trace.x, y=trace.y,
             mode="lines+markers",
-            line=dict(color=overlay_hex, width=2),
-            marker=dict(color=overlay_hex, size=8,
+            line=dict(color=trace.color_hex, width=2),
+            marker=dict(color=trace.marker_color_hex, size=8,
                         line=dict(color="rgba(0,0,0,0.5)", width=0.5)),
-            name=str(series_name),
-            legendgroup=str(series_name),
-            error_y=error_y,
-            visible=visible,
+            name=trace.series,
+            legendgroup=trace.series,
+            visible=plot_visible,
         ))
 
-    fig.update_xaxes(range=sorted([x_left, x_right]), title="X")
-    fig.update_yaxes(range=sorted([y_bottom, y_top]), title="Y")
+    # When axis is log-scaled, Plotly expects `range` in log10 units.
+    if x_log_base:
+        x_lo, x_hi = sorted([x_left, x_right])
+        fig.update_xaxes(type="log",
+                         range=[float(np.log10(x_lo)), float(np.log10(x_hi))],
+                         title="X (log10)")
+    else:
+        fig.update_xaxes(range=sorted([x_left, x_right]), title="X")
+    if y_log_base:
+        y_lo, y_hi = sorted([y_bottom, y_top])
+        fig.update_yaxes(type="log",
+                         range=[float(np.log10(y_lo)), float(np.log10(y_hi))],
+                         title="Y (log10)")
+    else:
+        fig.update_yaxes(range=sorted([y_bottom, y_top]), title="Y")
     fig.update_layout(
         height=600,
         margin=dict(l=50, r=20, t=20, b=50),
@@ -661,6 +536,21 @@ def _callback_apply_calibration():
             return
         used_detection = True
 
+    # Inherit log-axis flags from the detected axis calibrations when available
+    # (the new pipeline auto-detects log10 axes and sets `log_base=10.0`). The
+    # manual fields hold data values in original (linear) space; compute_calibration
+    # applies the log transform internally per `*_log_base`.
+    x_log_base = None
+    y_log_base = None
+    if _auto_detection_available():
+        det = st.session_state.auto_axis_detection
+        x_cal = det.get("x_calibration") if det else None
+        y_cal = det.get("y_calibration") if det else None
+        if x_cal and x_cal.get("log_base"):
+            x_log_base = float(x_cal["log_base"])
+        if y_cal and y_cal.get("log_base"):
+            y_log_base = float(y_cal["log_base"])
+
     cal = compute_calibration(
         st.session_state.get("p1_px_x", 0.0), st.session_state.get("p1_px_y", 0.0),
         st.session_state.get("p2_px_x", 0.0), st.session_state.get("p2_px_y", 0.0),
@@ -669,18 +559,55 @@ def _callback_apply_calibration():
         st.session_state.get("p2_data_x", 1.0),
         st.session_state.get("p3_data_y", 1.0),
         st.session_state.get("p1_data_y", 0.0),
+        x_log_base=x_log_base,
+        y_log_base=y_log_base,
     )
     if cal is None:
-        st.session_state.apply_calibration_result = (
-            "error:Invalid points — P1 and P2 must differ in pixel X, "
+        msg = (
+            "Invalid points — P1 and P2 must differ in pixel X, "
             "and P3 must differ in pixel Y from the X-axis baseline."
         )
+        if x_log_base or y_log_base:
+            msg += (
+                " Note: a log-scale axis was detected — data values must be "
+                "strictly positive for log axes."
+            )
+        st.session_state.apply_calibration_result = "error:" + msg
         return
     if used_detection and _auto_detection_available():
         det = st.session_state.auto_axis_detection
         cal["auto_axis_confidence"] = float(det.get("confidence", 0.0))
         cal["auto_axis_mode"] = det.get("mode", "unknown")
     st.session_state.calibration = cal
+
+    # When the user calibrates purely manually (no auto-detection was used),
+    # synthesise a typed CalibrationResult so the diagnostic overlay can render
+    # the manual P1/P2/P3 anchors. The overlay renderer tolerates bbox=None and
+    # will draw the anchors regardless — manual mode does not depend on any
+    # geometric frame detection.
+    if not used_detection:
+        try:
+            manual_result = manual_calibration(
+                p1_pixel=(st.session_state.get("p1_px_x", 0.0),
+                          st.session_state.get("p1_px_y", 0.0)),
+                p2_pixel=(st.session_state.get("p2_px_x", 0.0),
+                          st.session_state.get("p2_px_y", 0.0)),
+                p3_pixel=(st.session_state.get("p3_px_x", 0.0),
+                          st.session_state.get("p3_px_y", 0.0)),
+                p1_data_x=float(st.session_state.get("p1_data_x", 0.0)),
+                p2_data_x=float(st.session_state.get("p2_data_x", 1.0)),
+                p3_data_y=float(st.session_state.get("p3_data_y", 1.0)),
+                p1_data_y=float(st.session_state.get("p1_data_y", 0.0)),
+                x_log_base=x_log_base,
+                y_log_base=y_log_base,
+            )
+            if manual_result.success:
+                st.session_state.auto_axis_result = manual_result
+                st.session_state.auto_axis_detection = manual_result.to_legacy_dict()
+                st.session_state.auto_axis_image_hash = st.session_state.get("image_hash")
+        except Exception:
+            pass
+
     st.session_state.apply_calibration_result = "ok"
 
 
@@ -691,13 +618,23 @@ def _load_image_from_upload(image_file):
     if (st.session_state.image_hash == img_hash
             and "image_bgr" in st.session_state):
         return
-    try:
-        pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img_rgb = np.array(pil)
-        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-    except Exception as e:
-        st.error(f"Failed to load image: {e}")
+    load = decode_and_maybe_downscale(
+        img_bytes,
+        downscale=bool(st.session_state.get("downscale_large_uploads", False)),
+    )
+    if load.error is not None:
+        st.error(load.error)
         return
+    # Surface size/downscale warnings to the UI.
+    for msg in load.warnings:
+        if msg.startswith("Downscaled"):
+            st.info(msg)
+        else:
+            st.warning(msg)
+    st.session_state["image_downscale_factor"] = load.downscale_factor
+
+    img_rgb = load.img_rgb
+    img_bgr = load.img_bgr
     st.session_state.image_rgb = img_rgb
     st.session_state.image_bgr = img_bgr
     st.session_state.image_hash = img_hash
@@ -716,46 +653,39 @@ def _load_image_from_upload(image_file):
     ):
         st.session_state.pop(k, None)
 
+    # Seed P1/P2/P3 at sensible default positions so the manual workflow
+    # starts with anchors visible on the image. The user drags them to the
+    # correct tick positions. Auto-detection (when available) overwrites
+    # these on its first successful run.
+    h, w = img_bgr.shape[:2]
+    st.session_state["p1_px_x"] = float(round(0.10 * w))
+    st.session_state["p1_px_y"] = float(round(0.90 * h))
+    st.session_state["p2_px_x"] = float(round(0.90 * w))
+    st.session_state["p2_px_y"] = float(round(0.90 * h))
+    st.session_state["p3_px_x"] = float(round(0.10 * w))
+    st.session_state["p3_px_y"] = float(round(0.10 * h))
+
 
 def _load_csv(csv_source):
-    """Parse and validate CSV text. Returns a DataFrame or None on hard error."""
-    try:
-        df = pd.read_csv(io.StringIO(csv_source))
-    except Exception as e:
-        st.error(f"Failed to parse CSV: {e}")
+    """Streamlit wrapper around plotverify_core.load_csv.
+
+    Surfaces the typed `LoadReport` as `st.error` / `st.warning` calls and
+    writes the legacy session-state flags (`csv_has_series_color`,
+    `error_bar_reversed_count`) used elsewhere in the app.
+    """
+    df, report = _core_load_csv(csv_source)
+    if report.error is not None:
+        st.error(report.error)
         return None
-
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
-        st.error(f"CSV is missing required columns: {missing}")
-        return None
-
-    has_series_color = "series_color" in df.columns
-    st.session_state["csv_has_series_color"] = has_series_color
-    if not has_series_color:
-        df["series_color"] = pd.NA
-
-    df["x"] = pd.to_numeric(df["x"], errors="coerce")
-    df["y"] = pd.to_numeric(df["y"], errors="coerce")
-    df["y_err_lower"] = pd.to_numeric(df["y_err_lower"], errors="coerce")
-    df["y_err_upper"] = pd.to_numeric(df["y_err_upper"], errors="coerce")
-
-    n_before = len(df)
-    df = df.dropna(subset=["x", "y"]).reset_index(drop=True)
-    if len(df) < n_before:
-        st.warning(f"Dropped {n_before - len(df)} row(s) with missing x or y.")
-
-    df["series"] = df["series"].astype(str)
-
-    if has_series_color:
-        invalid = ~df["series_color"].apply(is_valid_hex)
-        if invalid.any():
-            st.warning(
-                f"{int(invalid.sum())} row(s) have invalid series_color values; "
-                f"using {FALLBACK_HEX} as a fallback."
-            )
-            df.loc[invalid, "series_color"] = FALLBACK_HEX
-
+    st.session_state["csv_has_series_color"] = report.has_series_color_column
+    st.session_state["error_bar_reversed_count"] = report.n_reversed_error_bars
+    for msg in report.warnings:
+        st.warning(msg)
+    if report.n_reversed_error_bars > 0 and report.reversed_samples:
+        st.caption(
+            "Reversed-error sample rows: " +
+            ", ".join(f"{s}@x={x:g}" for s, x in report.reversed_samples)
+        )
     return df
 
 
@@ -801,6 +731,16 @@ def render_sidebar():
             "Plot image",
             type=["png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"],
         )
+        st.toggle(
+            "Downscale large uploads",
+            key="downscale_large_uploads",
+            help=(
+                f"When the image exceeds {LARGE_IMAGE_MAX_EDGE}px on its longest "
+                f"edge, resize it to {LARGE_IMAGE_DOWNSCALE_EDGE}px before "
+                "processing. OCR and dark-mask preparation are much faster on "
+                "smaller images."
+            ),
+        )
         csv_file = st.file_uploader("Extracted CSV", type=["csv"])
         csv_text = st.text_area(
             "...or paste CSV text",
@@ -828,6 +768,21 @@ def render_sidebar():
                 if st.session_state.csv_hash != csv_hash:
                     # New CSV — clear any user-picked color overrides from the old file.
                     st.session_state.series_color_overrides = {}
+                    # Drop per-series widget state from the previous CSV so a stale
+                    # `vis_<old_name>=False` doesn't shadow a same-named series in
+                    # the new file (and prevent _init_series_states from re-seeding
+                    # to True). Same for the toggle/button keys.
+                    new_series_names = set(new_df["series"].astype(str).tolist())
+                    for k in list(st.session_state.keys()):
+                        for prefix in ("vis_", "vis_btn_", "interp_btn_",
+                                       "use_de_", "de_", "hmin_", "hmax_",
+                                       "smin_", "smax_", "vmin_", "vmax_",
+                                       "cpick_"):
+                            if k.startswith(prefix):
+                                suffix = k[len(prefix):]
+                                if suffix not in new_series_names:
+                                    st.session_state.pop(k, None)
+                                break
                     st.session_state.series_states = _init_series_states(new_df)
                     st.session_state.csv_hash = csv_hash
                     # Clear the masked calibration image — series identities changed.
@@ -968,23 +923,26 @@ def _get_or_compute_frame_preview(img_bgr, image_hash):
     Phase A OCR is the most expensive step in the pipeline (several seconds with
     EasyOCR). The manual-band tab redraws on every slider change, so we cannot
     re-run OCR in the redraw loop. This helper memoises the FramePreview by
-    image hash; slider movements hit the cache.
+    (image_hash, min_ocr_confidence) so confidence-slider changes correctly
+    invalidate; band-geometry sliders don't affect Phase A and stay cached.
 
     Returns ``(preview, was_cached)`` so callers can show a spinner only on the
     first compute. ``was_cached`` is True when this call was a cache hit.
     """
+    min_conf = float(st.session_state.get("ocr_min_confidence", 0.20))
+    cache_key = (image_hash, round(min_conf, 4))
     cached = st.session_state.get("frame_preview_cache")
-    if cached and cached.get("hash") == image_hash:
+    if cached and cached.get("key") == cache_key:
         return cached["preview"], True
 
     # Carry forward OCR-tuning settings so the preview matches
     # what `run_calibration` will see when invoked next.
     cfg = CalibrationConfig(
         use_gpu=False,
-        min_ocr_confidence=float(st.session_state.get("ocr_min_confidence", 0.20)),
+        min_ocr_confidence=min_conf,
     )
     preview = detect_axis_frame(img_bgr, config=cfg)
-    st.session_state.frame_preview_cache = {"hash": image_hash, "preview": preview}
+    st.session_state.frame_preview_cache = {"key": cache_key, "preview": preview}
     st.session_state.frame_preview_run_count = (
         int(st.session_state.get("frame_preview_run_count", 0)) + 1
     )
@@ -1119,6 +1077,15 @@ def _render_ocr_tick_tables(detection):
                  key="recalibrate_from_edits"):
         updated = update_detection_from_tick_tables(detection, edited_x, edited_y)
         st.session_state.auto_axis_detection = updated
+        # Rebuild the typed CalibrationResult so the diagnostic overlay
+        # (which renders from `auto_axis_result` when present) reflects the
+        # post-edit anchors and paired ticks instead of the pre-edit ones.
+        try:
+            st.session_state.auto_axis_result = rebuild_result_from_detection(updated)
+        except Exception:
+            # If reconstruction fails for any reason, clear it so the overlay
+            # falls back to rebuilding from the legacy dict.
+            st.session_state.auto_axis_result = None
         _set_manual_fields_from_detection(updated)
         st.toast("Calibration updated from edited tick tables.", icon="✅")
         st.rerun()
@@ -1181,6 +1148,34 @@ def _render_manual_override(img_bgr):
         st.session_state.copy_detected_result = None
 
 
+def _render_manual_mode_tail(img_bgr):
+    """Sections 6 and 7 only — used when EasyOCR is unavailable.
+
+    Renders Manual override + Apply Calibration. Skips Detection settings,
+    frame preview, band controls, and the auto-detection results panel, since
+    none of those have meaning without OCR / geometric frame detection.
+    """
+    with st.expander("Manual override", expanded=True):
+        _render_manual_override(img_bgr)
+
+    st.button(
+        "Apply Calibration",
+        key="apply_calibration_primary",
+        on_click=_callback_apply_calibration,
+        type="primary",
+        use_container_width=True,
+        help="Applies the P1/P2/P3 values above. Enables the Overlay and Compare tabs.",
+    )
+
+    res = st.session_state.get("apply_calibration_result")
+    if res == "ok":
+        st.success("Calibration applied.")
+        st.session_state.apply_calibration_result = None
+    elif res and res.startswith("error:"):
+        st.error(res[len("error:"):])
+        st.session_state.apply_calibration_result = None
+
+
 def _render_calibration_tab(img_bgr):
     """Calibrate tab: one button at the top to run detection, one at the bottom to apply.
 
@@ -1198,17 +1193,38 @@ def _render_calibration_tab(img_bgr):
         cal_img_bgr = img_bgr
 
     detection_available = _auto_detection_available()
+    ocr_is_available = ocr_available()
+
+    # When EasyOCR is missing, force OCR off and inform the user that the
+    # manual calibration path is the supported workflow. The pipeline still
+    # runs in geometry-only mode for `Run Detection`, but accuracy is reduced.
+    if not ocr_is_available:
+        st.session_state["use_ocr_axis"] = False
+        st.info(
+            "EasyOCR is not installed — auto-calibration of tick labels is "
+            "disabled. Use **Manual override** to set P1/P2/P3 by pixel and "
+            "data values, then click **Apply Calibration**. "
+            "(Install EasyOCR + pytorch to enable auto-calibration.)"
+        )
 
     # ── 1. Detection settings (collapsed by default) ──────────────────────────
     with st.expander("Detection settings", expanded=not detection_available):
         c1, c2 = st.columns(2)
         with c1:
-            st.toggle("OCR-assisted detection", value=True, key="use_ocr_axis")
+            st.toggle(
+                "OCR-assisted detection",
+                value=ocr_is_available,
+                key="use_ocr_axis",
+                disabled=not ocr_is_available,
+                help=("EasyOCR is required for OCR-assisted detection."
+                      if not ocr_is_available else None),
+            )
             st.toggle("Mask all detected text", value=False, key="ocr_mask_all_text")
         with c2:
             st.toggle("Show OCR debug overlay", value=True, key="show_ocr_debug_overlay")
         st.slider("Min OCR confidence", 0.0, 1.0,
-                  key="ocr_min_confidence", step=0.05)
+                  key="ocr_min_confidence", step=0.05,
+                  disabled=not ocr_is_available)
 
     # ── 2. Primary action: Run Detection ──────────────────────────────────────
     if st.session_state.get("df") is None:
@@ -1227,9 +1243,13 @@ def _render_calibration_tab(img_bgr):
         key="run_detection_primary",
         type="primary",
         use_container_width=True,
+        disabled=not ocr_is_available,
         help=(
-            "Runs the full pipeline: EasyOCR text discovery, frame detection, "
-            "tick parsing, grid-fit, and per-axis calibration regression."
+            "EasyOCR is required for auto-detection. Use Manual override to set "
+            "P1/P2/P3 directly."
+            if not ocr_is_available
+            else "Runs the full pipeline: EasyOCR text discovery, frame detection, "
+                 "tick parsing, grid-fit, and per-axis calibration regression."
         ),
     )
     if detection_available:
@@ -1239,7 +1259,14 @@ def _render_calibration_tab(img_bgr):
             f"confidence {float(det.get('confidence', 0.0)):.2f}"
         )
 
-    # ── 3. Frame preview + band controls (always visible) ─────────────────────
+    # ── 3. Frame preview + band controls (auto-mode only) ─────────────────────
+    # The frame preview, X/Y label band sliders, and any rendering that depends
+    # on a detected bbox are OCR-mode-only. Manual calibration places anchors
+    # by user drag/edit and never consults the geometric frame detector.
+    if not ocr_is_available:
+        _render_manual_mode_tail(img_bgr)
+        return
+
     try:
         with st.spinner("Detecting plot frame..."):
             preview, _was_cached = _get_or_compute_frame_preview(img_bgr, image_hash)
@@ -1312,10 +1339,24 @@ def _render_calibration_tab(img_bgr):
 
     if detection_available:
         cal_result = st.session_state.get("auto_axis_result")
-        band_bbox = cal_result.bbox if cal_result is not None else preview.bbox
+        # A failed re-run can leave cal_result with bbox=None; fall back to the
+        # frame preview's bbox in that case so the band-overlay helpers don't
+        # receive None.
+        band_bbox = (
+            cal_result.bbox
+            if cal_result is not None and cal_result.bbox is not None
+            else preview.bbox
+        )
     else:
         cal_result = None
         band_bbox = preview.bbox
+
+    if band_bbox is None:
+        st.error(
+            "Could not detect a plot frame. Adjust the Detection settings or "
+            "use **Manual override** to set P1/P2/P3 directly."
+        )
+        return
 
     y_band = _y_label_band(band_bbox,
                            extra_left=int(y_extra_left),
@@ -1397,25 +1438,57 @@ def _render_calibration_tab(img_bgr):
                 use_gpu=False,
                 min_ocr_confidence=float(st.session_state.get("ocr_min_confidence", 0.20)),
             )
+            new_detection_applied = False
             try:
                 if not bool(st.session_state.get("use_ocr_axis", True)):
                     detection = auto_detect_axes_and_ticks(cal_img_bgr)
                     detection["ocr_enabled"] = False
-                    st.session_state.auto_axis_detection = detection
-                    st.session_state.auto_axis_result = None
+                    # Only replace prior state when this run actually found
+                    # a plot frame; otherwise keep the previous (working)
+                    # calibration so the user can adjust settings and retry.
+                    if detection.get("bbox"):
+                        st.session_state.auto_axis_detection = detection
+                        st.session_state.auto_axis_result = None
+                        new_detection_applied = True
+                    else:
+                        st.warning(
+                            "Detection found no plot frame — keeping previous "
+                            "calibration. Adjust Detection settings and try again."
+                        )
+                        for w in detection.get("warnings", []) or []:
+                            st.warning(w)
                 else:
                     result = run_calibration(cal_img_bgr, config=override_cfg)
-                    st.session_state.auto_axis_detection = result.to_legacy_dict()
-                    st.session_state.auto_axis_result = result
-                    if result.success:
-                        st.toast(f"Detection succeeded — confidence {result.confidence:.2f}",
-                                 icon="✅")
-                    for w in result.warnings:
-                        st.warning(w)
+                    if result.bbox is None:
+                        st.warning(
+                            "Detection found no plot frame — keeping previous "
+                            "calibration. Adjust Detection settings and try again."
+                        )
+                        for w in result.warnings:
+                            st.warning(w)
+                    else:
+                        st.session_state.auto_axis_detection = result.to_legacy_dict()
+                        st.session_state.auto_axis_result = result
+                        new_detection_applied = True
+                        if result.success:
+                            st.toast(
+                                f"Detection succeeded — confidence {result.confidence:.2f}",
+                                icon="✅",
+                            )
+                        for w in result.warnings:
+                            st.warning(w)
             except Exception as e:
                 st.error(f"Detection failed: {type(e).__name__}: {e}")
                 return
             st.session_state.auto_axis_image_hash = image_hash
+            if new_detection_applied:
+                # Drop the previous run's manual-field values so the next
+                # _callback_apply_calibration repopulates them from the fresh
+                # detection (taking the `used_detection=True` branch).
+                for key in ("p1_px_x", "p1_px_y", "p1_data_x", "p1_data_y",
+                            "p2_px_x", "p2_px_y", "p2_data_x",
+                            "p3_px_x", "p3_px_y", "p3_data_y"):
+                    st.session_state.pop(key, None)
             _callback_apply_calibration()
             st.rerun()
 
@@ -1456,11 +1529,32 @@ def _render_calibration_tab(img_bgr):
 
     if st.session_state.calibration.get("applied"):
         cal_s = st.session_state.calibration
+        x_log = cal_s.get("x_log_base")
+        y_log = cal_s.get("y_log_base")
+        log_tags = []
+        if x_log:
+            log_tags.append("X log10")
+        if y_log:
+            log_tags.append("Y log10")
+        log_suffix = (" — " + ", ".join(log_tags)) if log_tags else ""
+        x_unit = "log10(data)/px" if x_log else "data/px"
+        y_unit = "log10(data)/px" if y_log else "data/px"
         st.caption(
-            f"✓ Active calibration — "
-            f"X: {cal_s.get('x_scale', 0):.5f} data/px  |  "
-            f"Y: {cal_s.get('y_scale', 0):.5f} data/px"
+            f"✓ Active calibration{log_suffix} — "
+            f"X: {cal_s.get('x_scale', 0):.5f} {x_unit}  |  "
+            f"Y: {cal_s.get('y_scale', 0):.5f} {y_unit}"
         )
+        # Surface P1/P2 baseline mismatch — the calibration math averages the
+        # two pixel-y values without warning, so a user-induced rotation between
+        # the two anchors is silently absorbed.
+        disagree = float(cal_s.get("p1p2_y_disagreement_px", 0.0) or 0.0)
+        if disagree > P1P2_Y_TOLERANCE_PX:
+            st.warning(
+                f"P1 and P2 differ in pixel-Y by {disagree:.1f}px (tolerance "
+                f"{P1P2_Y_TOLERANCE_PX:.0f}px). The x-axis baseline was set to "
+                "the midpoint. Drag P2 to match P1's pixel-Y for a consistent "
+                "x-axis baseline."
+            )
     else:
         st.caption("✗ Not yet calibrated — apply to enable the Overlay and Compare tabs.")
 
