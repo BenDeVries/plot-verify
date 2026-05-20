@@ -209,6 +209,12 @@ class CalibrationConfig:
     x_band_extra_horizontal_px: int = 0
     # Inward trim for y-band top/bottom: excludes labels at the extreme ends of the y-axis.
     y_band_extra_vertical_px: int = 0
+    # Slide the whole y-band horizontally (px; positive = right = into plot area).
+    # Allows scanning inward tick labels that sit inside the axis boundary.
+    y_band_x_offset: int = 0
+    # Slide the whole x-band vertically (px; positive = down = away from axis).
+    # Negative values shift the band up into the plot area for inward tick labels.
+    x_band_y_offset: int = 0
     # Fallback band sizes — used only if the narrow band returns 0 numeric records.
     # Wider bands risk capturing axis titles, but rescue plots where tick labels
     # sit unusually far from the axis (large fonts, multi-line label formats).

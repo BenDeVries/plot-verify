@@ -4,7 +4,10 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('axis_pipeline/calibration.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('axis_pipeline/pipeline.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('axis_pipeline/legacy.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(timeout 8 shiny run app_shiny.py --port 18765 --no-reload)",
+      "Bash(timeout 8 shiny run app_shiny.py --port 18765)",
+      "Bash(python3 *)"
     ]
   }
 }
