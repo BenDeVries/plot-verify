@@ -33,6 +33,9 @@ class OverlayTrace:
     color_hex: str
     marker_color_hex: str
     visible: bool
+    # Global point IDs matching EditableOverlay (e.g. "SeriesA#3"). Index is
+    # the global DataFrame row position, not a series-local index.
+    point_ids: List[str] = None  # type: ignore[assignment]
 
 
 def build_overlay_traces(
@@ -62,6 +65,11 @@ def build_overlay_traces(
         if not is_valid_hex(color_hex):
             color_hex = FALLBACK_HEX
         marker_hex = hex_complement(color_hex)
+
+        # sdf.index holds the global row positions in df (which is produced by
+        # EditableOverlay.to_dataframe() and already has a 0-based reset index).
+        # These match the indices used to build EditableOverlay pids.
+        point_ids = [f"{series_name}#{i}" for i in sdf.index.tolist()]
 
         x = sdf["x"].to_numpy(dtype=float)
         y = sdf["y"].to_numpy(dtype=float)
@@ -97,6 +105,7 @@ def build_overlay_traces(
             color_hex=color_hex,
             marker_color_hex=marker_hex,
             visible=bool(series_visibility.get(series_name, True)),
+            point_ids=point_ids,
         ))
 
     return traces

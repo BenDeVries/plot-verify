@@ -620,18 +620,26 @@ def _band_ocr_with_fallback(
         # ambiguous plots.
         img_w = img_bgr.shape[1]
         extend_right = 25 if (img_w - int(bbox.right)) < 30 else 0
-        compute_band = lambda extra: ocr_mod.x_label_band(
-            bbox, extra_below=extra, extra_horizontal=horiz,
-            extend_outward=extend_right,
-        )
+        _x_slide = cfg.x_band_y_offset
+        def compute_band(extra, _h=horiz, _e=extend_right, _s=_x_slide):
+            b = ocr_mod.x_label_band(bbox, extra_below=extra,
+                                     extra_horizontal=_h, extend_outward=_e)
+            if _s:
+                b = (b[0], b[1] + _s, b[2], b[3] + _s)
+            return (min(b[0], b[2]), min(b[1], b[3]),
+                    max(b[0], b[2]), max(b[1], b[3]))
     elif axis == "y":
         narrow_extra = cfg.y_band_extra_px
         wide_extra = cfg.y_band_fallback_extra_px
         vert = cfg.y_band_extra_vertical_px
         phase_name = OCRPhase.Y_BAND.value
-        compute_band = lambda extra: ocr_mod.y_label_band(
-            bbox, extra_left=extra, extra_vertical=vert,
-        )
+        _y_slide = cfg.y_band_x_offset
+        def compute_band(extra, _v=vert, _s=_y_slide):
+            b = ocr_mod.y_label_band(bbox, extra_left=extra, extra_vertical=_v)
+            if _s:
+                b = (b[0] + _s, b[1], b[2] + _s, b[3])
+            return (min(b[0], b[2]), min(b[1], b[3]),
+                    max(b[0], b[2]), max(b[1], b[3]))
     else:
         raise ValueError(f"axis must be 'x' or 'y', got {axis!r}")
 

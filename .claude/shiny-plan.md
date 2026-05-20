@@ -12,7 +12,7 @@ This plan should be executed only after completing the first plan, which address
 
 The goal of this second plan is to migrate the app from Streamlit to Shiny while shifting the primary user workflow from single-image review to batch image/CSV processing.
 
-## Current Status (as of 2026-05-19)
+## Current Status (as of 2026-05-20)
 
 ### Completed
 
@@ -20,6 +20,7 @@ The goal of this second plan is to migrate the app from Streamlit to Shiny while
 - **All Part 8 refactors A–G** — `plotverify_core/` package fully extracted (~2000-line `app_auto_axis.py` now consumes the core).
 - **Part 8 Refactor H, Phases 1–2** — `axis_pipeline/legacy.py` entries emit `DeprecationWarning`; `update_result_from_tick_edits` / `rebuild_result_from_detection` exist as typed replacements.
 - **Milestones 1 and 2** — algorithm stabilization (per the first plan) and UI-independent core extraction.
+- **Milestone 3** — single-image Shiny app. See detailed status below.
 - **Real-image regression infrastructure** — `tests/test_real_image_regression.py` parametrizes over every verified diagnostic in `test_images/verified_raw_detection_diagnostics/`. Current test count: **156 passed, 1 xfailed** (only `lin_log` remains xfail; see drift section below).
 - **1-SE outlier-exclusion regression test** — `tests/test_calibration_1se.py` locks in the rule that the 1-SE threshold must come from the min-rmse candidate's own residuals (the previous bug let a mispaired y=0 inflate the threshold past the point at which it could exclude itself).
 - **Manual-mode overlay contract** — `tests/test_overlay_manual_mode.py` confirms `manual_calibration() + render_overlay()` draws P1/P2/P3 anchors without any geometric bbox.
@@ -67,7 +68,8 @@ This is the regression protocol — do **not** rewrite the test to use only `Cal
 
 1. ~~**Investigate the 6 drift cases**~~ — closed 2026-05-19; 5 of 6 cases fixed (see "Algorithmic Drift Resolution" above). `lin_log` remains as a single xfail and is OCR-stability rather than a pipeline bug — acceptable to ship the migration without resolving it.
 2. ~~**CI setup**~~ — closed 2026-05-19. GitHub Actions workflow at `.github/workflows/tests.yml` runs the full suite (156 passed, 1 xfailed) on push and PR across Python 3.10/3.11/3.12 with `~/.EasyOCR` cached between runs. Optional local pre-push hook at `scripts/git-hooks/pre-push` (enable via `git config core.hooksPath scripts/git-hooks`). Dependency manifests: `requirements.txt` (runtime) and `requirements-dev.txt` (adds pytest).
-3. **Begin Milestone 3** — minimal Shiny single-image app.
+3. ~~**Begin Milestone 3**~~ — substantially complete. See Milestone 3 status below.
+4. **Overlay plot horizontal squishing on first tab visit** — known JS bug. When `overlay_plot` first renders while the tab pane is `display:none`, Plotly sets an explicit pixel `width` on the `gd` element (using a 0-measurement default). Subsequent `Plotly.Plots.resize()` calls read `getComputedStyle(gd).width` which returns the stale inline value, making the resize a no-op. Current fix attempts: one-shot MutationObserver, `shown.bs.tab` + polling, ResizeObserver + `gd.style.width = ''` + `Plotly.relayout(gd, {autosize: true})`. The ResizeObserver approach is the current strategy but has not yet been confirmed fixed by the user.
 
 > Persistence is no longer a blocker: the Streamlit app gained a manual Save/Load UI backed by `plotverify_core/streamlit_bridge.py`. End-of-callback autosave via `PlotVerifyApp.autosave_if_dirty()` remains available on the controller — it can be wired in later if needed without further surgery to the bridge.
 
@@ -1557,22 +1559,44 @@ Still outstanding from the Part 8 acceptance criteria:
 - `AppState` JSON serialization round-trip (currently not exercised — see Outstanding §3).
 - Streamlit's adoption of `PlotVerifyApp` is still partial: callbacks call through the core for shared logic, but `st.session_state` keys remain the source of truth in places. Full migration is deferred until Shiny exists, so the Streamlit app keeps shipping.
 
-## Milestone 3: Build Minimal Shiny Single-Image App  ⏳ Not started — drift investigation closed 2026-05-19 (only `lin_log` xfail remains, acceptable); gated on Bug #18 and CI setup
+## Milestone 3: Build Minimal Shiny Single-Image App  ✅ Substantially complete (2026-05-20)
 
-Recreate the single-image workflow for both auto and manual calibration modes:
+Entry points: `shiny_app/app.py` (server + UI + JS), `shiny_app/figures.py` (Plotly figure builders).
+Run with: `shiny run shiny_app/app.py` (or `python app_shiny.py`).
 
-1. Upload one image.
-2. Upload one CSV.
-3. Detect EasyOCR availability and show banner if absent.
-4. If EasyOCR available: run auto-calibration and show calibration points.
-5. Manual Values panel (always present):
-   - Show P1/P2/P3 pixel and data value fields.
-   - Draggable anchors on the image.
-   - `Apply manual calibration` button.
-   - `Detect axis frame` button (geometry only, available with or without EasyOCR).
-   - Panel open by default when EasyOCR is absent; collapsible when EasyOCR is present.
-6. Show overlay.
-7. Export corrected CSV.
+### Implemented
+
+**Upload (sidebar)**
+- Image upload (PNG/JPG/TIFF/BMP/WebP) + optional CSV upload.
+- OCR availability banner (informational; auto-detection controls hidden when EasyOCR absent).
+
+**Calibrate tab**
+- Main calibration image rendered as a Plotly figure.
+- Draggable P1/P2/P3 anchor annotations; click annotation to select, then arrow keys for ±1 px (Shift = ±10 px).
+- Run detection (auto-calibration via `axis_pipeline`), Detect axis frame, Reset anchors buttons.
+- Right-side accordion stack (open by default: X/Y label bands + Manual Values):
+  - **X/Y label bands** — band-width sliders, band preview images.
+  - **Calibration points** — detected tick tables (x and y).
+  - **Manual Values** — P1/P2/P3 pixel-x/y and data-x/y numeric inputs; log-base checkboxes; Apply manual calibration button; P1/P2 y-disagreement warning when delta > 3 px.
+- Calibration summary (status, anchor pixel/data coordinates, calibration residual).
+- Bottom accordion: Detection settings (min OCR confidence), Frame-detection warnings.
+
+**Overlay tab**
+- Calibrated image with all series drawn as scatter + error bars + low-opacity ribbon fills.
+- Right-side card: series visibility checkboxes; Export updated CSV (filename input + optional audit columns toggle + download button).
+- Edit point panel: click a data point on the plot to select it (highlights center + upper/lower error caps); arrow keys nudge the selected part; step-size input; force-symmetry dropdown (none / upper → lower / both from centre).
+- Floating zoom bubble: draggable preview centred on the selected point or error-bar cap; auto-shows on selection, auto-hides on deselect. Drag handle at top; positioned top-right.
+- Click plot background to deselect point and hide zoom bubble.
+
+**Data model / state**
+- One `PlotVerifyApp` instance per session, holding `AppState` with one `PerFileState`.
+- `EditableOverlay` is the source of truth for all point edits; `export_csv()` exports the current state with or without audit columns.
+- `anchors_rv` reactive value is the single source of truth for P1/P2/P3; pixel inputs, drag events, and auto-calibration all write through it.
+
+### Outstanding / known issues
+
+- **Horizontal squishing on first Overlay tab visit** — Plotly renders while the tab pane is `display:none`, sets an explicit pixel width on the `gd` element (measuring 0), and subsequent resize calls are no-ops because `getComputedStyle(gd).width` returns the stale inline value. Current JS strategy: `ResizeObserver` on `#overlay_plot` container; when container width goes from 0 → real, clear `gd.style.width`/`height` then call `Plotly.relayout(gd, {autosize: true})`. Not yet confirmed resolved.
+- Smoke test (`tests/test_shiny_smoke.py`) covers import and basic render; no end-to-end Shiny interaction tests yet.
 
 ## Milestone 4: Add Batch Upload and File Matching
 
@@ -2008,7 +2032,7 @@ The refactors are interdependent. The recommended order is:
 | 6 | B (typed `CalibrationResult` everywhere) | A, C (`PerFileState` carries the typed result) | ✅ Done |
 | 7 | D (`PlotVerifyApp` controller) | A–C, F | ✅ Done |
 | 8 | H Phase 1–2 (deprecate legacy shims) | B, D | ✅ Done |
-| — | *Shiny milestones 3–8 happen here* | — | ⏳ Not started |
+| — | *Shiny milestones 3–8 happen here* | — | ✅ M3 substantially complete; M4–M9 not started |
 | 9 | H Phase 3 (delete legacy shims) | Shiny is the primary UI | ⏳ Not started |
 
 Refactors 1–7 keep the existing Streamlit app working at every step. Each can be merged independently and shipped to users. Refactor 9 is the only step that removes capabilities; gate it on the Shiny app passing the Part 7 acceptance criteria.
