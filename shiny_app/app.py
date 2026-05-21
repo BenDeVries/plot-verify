@@ -55,6 +55,7 @@ from plotverify_core import (
     Anchors,
     PlotVerifyApp,
     build_overlay_traces,
+    px_to_data,
 )
 
 from .figures import (
@@ -115,15 +116,20 @@ def _calibration_tab() -> ui.Tag:
         ui.layout_columns(
             ui.card(
                 ui.card_header(
-                    ui.row(
-                        ui.column(8, "Calibration image — drag P1/P2/P3 onto the correct tick positions (click an anchor, then arrow keys for ±1px; Shift = 10px)"),
-                        ui.column(4, ui.div(
+                    ui.div(
+                        ui.div(
+                            "Calibration image — drag P1/P2/P3 onto the correct tick positions "
+                            "(click an anchor, then arrow keys for ±1px; Shift = 10px)",
+                            style="flex: 1 1 auto; min-width: 0;",
+                        ),
+                        ui.div(
                             ui.input_action_button("run_detection", "Run detection",
                                                     class_="btn-primary"),
                             ui.input_action_button("detect_frame", "Detect axis frame"),
                             ui.input_action_button("reset_anchors", "Reset anchors"),
-                            style="display:flex; gap:6px; justify-content:flex-end;",
-                        )),
+                            style="display:flex; gap:6px; flex-shrink: 0;",
+                        ),
+                        style="display:flex; flex-wrap: wrap; gap: 8px; align-items: center;",
                     )
                 ),
                 output_widget("cal_plot"),
@@ -233,7 +239,22 @@ def _vis_id(series_name: str) -> str:
     return "vis_" + "".join(c if (c.isalnum() or c == "_") else "_" for c in series_name)
 
 
-_ANCHOR_KEY_SCRIPT = """<script>
+_ANCHOR_KEY_SCRIPT = """<style>
+/* Allow file-upload progress text to wrap rather than clip in the sidebar */
+.shiny-file-input-progress {
+    overflow: visible;
+    height: auto;
+}
+.shiny-file-input-progress .progress-bar {
+    overflow: visible;
+    white-space: normal;
+    height: auto;
+    min-height: 1.25rem;
+    line-height: 1.25rem;
+    padding: 2px 4px;
+}
+</style>
+<script>
 (function() {
     function log(m) { try { console.log('[plotverify] ' + m); } catch (e) {} }
     log('anchor key script loaded');
@@ -383,18 +404,20 @@ _ANCHOR_KEY_SCRIPT = """<script>
             new ResizeObserver(function(entries) {
                 var w = entries[0] ? entries[0].contentRect.width : 0;
                 if (lastW < 50 && w > 50) {
-                    var gd = container.querySelector('.js-plotly-plot');
-                    if (gd) {
-                        // Clear the stale inline width so Plotly remeasures
-                        // from the container rather than from its own style.
-                        gd.style.width = '';
-                        gd.style.height = '';
-                        requestAnimationFrame(function() {
+                    // Query gd inside rAF so we get the element that actually
+                    // exists at fire time — Shiny may have replaced the widget
+                    // between the ResizeObserver callback and the rAF on fast
+                    // local servers, making a pre-captured gd reference stale.
+                    requestAnimationFrame(function() {
+                        var gd = container.querySelector('.js-plotly-plot');
+                        if (gd) {
+                            gd.style.width  = '';
+                            gd.style.height = '';
                             try {
-                                window.Plotly && Plotly.relayout(gd, {autosize: true});
+                                window.Plotly && Plotly.Plots.resize(gd);
                             } catch(_) {}
-                        });
-                    }
+                        }
+                    });
                 }
                 lastW = w;
             }).observe(container);
@@ -1314,7 +1337,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         focus_xp = _plot(focus_x, x_log)
         focus_yp = _plot(focus_y, y_log)
 
-        # Derive zoom radius the same way the figure builder does.
+        # Derive separate x and y zoom radii the same way the figure builder does.
+        h_img, w_img = fs.image_rgb.shape[:2]
+        x_left_d, _ = px_to_data(0, 0, cal)
+        x_right_d, _ = px_to_data(w_img, 0, cal)
+        _, y_top_d = px_to_data(0, 0, cal)
+        _, y_bot_d = px_to_data(0, h_img, cal)
+        x_full = abs(_plot(x_right_d, x_log) - _plot(x_left_d, x_log))
+        y_full = abs(_plot(y_top_d, y_log) - _plot(y_bot_d, y_log))
+        x_zoom_r = x_full * 0.05
+
         if (new_upper is not None and np.isfinite(float(new_upper))
                 and new_lower is not None and np.isfinite(float(new_lower))):
             err_h_plot = abs(_plot(float(new_upper), y_log) - _plot(float(new_lower), y_log))
@@ -1322,18 +1354,18 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             err_h_plot = None
 
         if err_h_plot is not None and err_h_plot > 0:
-            zoom_r = err_h_plot * 0.8
+            y_zoom_r = err_h_plot * 0.8
         else:
             try:
                 cur_range = widget.layout.yaxis.range
-                zoom_r = abs(cur_range[1] - cur_range[0]) / 2 if cur_range else 1.0
+                y_zoom_r = abs(cur_range[1] - cur_range[0]) / 2 if cur_range else y_full * 0.05
             except Exception:
-                zoom_r = 1.0
+                y_zoom_r = y_full * 0.05
 
-        x_lo_p, x_hi_p = focus_xp - zoom_r, focus_xp + zoom_r
-        y_lo_p, y_hi_p = focus_yp - zoom_r, focus_yp + zoom_r
+        x_lo_p, x_hi_p = focus_xp - x_zoom_r, focus_xp + x_zoom_r
+        y_lo_p, y_hi_p = focus_yp - y_zoom_r, focus_yp + y_zoom_r
 
-        bub_pt = bub_sel = bub_vline = bub_hline = None
+        bub_pt = bub_sel = bub_vline = bub_hline = bub_ribbon = None
         for tr in widget.data:
             n = getattr(tr, "name", "") or ""
             if n == "_bub_pt":
@@ -1344,6 +1376,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 bub_vline = tr
             elif n == "_bub_hline":
                 bub_hline = tr
+            elif n == "_bub_ribbon":
+                bub_ribbon = tr
 
         with widget.batch_update():
             if bub_pt is not None:
@@ -1363,6 +1397,14 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 bub_vline.x = [focus_x, focus_x]
             if bub_hline is not None:
                 bub_hline.y = [focus_y, focus_y]
+            if bub_ribbon is not None and (
+                    new_upper is not None and np.isfinite(float(new_upper))
+                    and new_lower is not None and np.isfinite(float(new_lower))):
+                bw = x_zoom_r * 0.12
+                x_c = float(new_x)
+                bub_ribbon.x = [x_c - bw, x_c - bw, x_c + bw, x_c + bw, x_c - bw]
+                bub_ribbon.y = [float(new_lower), float(new_upper),
+                                float(new_upper), float(new_lower), float(new_lower)]
             widget.layout.xaxis.range = [x_lo_p, x_hi_p]
             widget.layout.yaxis.range = [y_lo_p, y_hi_p]
 
@@ -1748,7 +1790,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         except Exception:
             active = "Calibrate"
         if active != "Overlay":
-            return go.FigureWidget(go.Figure(layout=dict(height=620)))
+            return go.FigureWidget(go.Figure(layout=dict(height=620, autosize=True)))
         _trace("overlay_plot.render")
         fid = file_id_rv()
         _ = overlay_revision()

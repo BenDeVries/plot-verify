@@ -611,6 +611,7 @@ def build_data_overlay_figure(
         fig.update_yaxes(range=sorted([y_bottom, y_top]), title="Y")
     fig.update_layout(
         height=height,
+        autosize=True,
         margin=dict(l=50, r=20, t=20, b=50),
         showlegend=True,
         legend=dict(x=1.02, y=1, xanchor="left"),
@@ -670,18 +671,8 @@ def build_zoom_bubble_figure(
     else:
         err_h_plot = None
 
-    if err_h_plot is not None and err_h_plot > 0:
-        zoom_r = err_h_plot * 0.8
-    else:
-        _, y_top_d = px_to_data(0, 0, cal)
-        _, y_bot_d = px_to_data(0, h_img, cal)
-        zoom_r = abs(_plot(y_top_d, y_log) - _plot(y_bot_d, y_log)) * 0.05
-
-    x_lo_p, x_hi_p = focus_xp - zoom_r, focus_xp + zoom_r
-    y_lo_p, y_hi_p = focus_yp - zoom_r, focus_yp + zoom_r
-
-    # Full image extent in data coords — crosshairs span this range so they
-    # are always clipped to whatever the axis range shows.
+    # Full image extent in data coords — used for zoom radii, crosshairs, and
+    # background image positioning.
     x_left_d, _ = px_to_data(0, 0, cal)
     x_right_d, _ = px_to_data(w_img, 0, cal)
     _, y_top_d = px_to_data(0, 0, cal)
@@ -690,6 +681,19 @@ def build_zoom_bubble_figure(
     x_data_hi = max(x_left_d, x_right_d)
     y_data_lo = min(y_top_d, y_bot_d)
     y_data_hi = max(y_top_d, y_bot_d)
+
+    # Separate x and y zoom radii so the window is never blown out when the
+    # two axes have very different numeric scales.
+    x_full = abs(_plot(x_right_d, x_log) - _plot(x_left_d, x_log))
+    y_full = abs(_plot(y_top_d, y_log) - _plot(y_bot_d, y_log))
+    x_zoom_r = x_full * 0.05
+    if err_h_plot is not None and err_h_plot > 0:
+        y_zoom_r = err_h_plot * 0.8
+    else:
+        y_zoom_r = y_full * 0.05
+
+    x_lo_p, x_hi_p = focus_xp - x_zoom_r, focus_xp + x_zoom_r
+    y_lo_p, y_hi_p = focus_yp - y_zoom_r, focus_yp + y_zoom_r
 
     # Background image (same positioning logic as build_data_overlay_figure).
     source = image_data_uri if image_data_uri is not None else Image.fromarray(img_rgb)
@@ -751,6 +755,20 @@ def build_zoom_bubble_figure(
         mode="lines", line=_xhair,
         name="_bub_hline", showlegend=False, hoverinfo="skip",
     ))
+
+    # Filled ribbon band showing the confidence interval at the selected point.
+    if upper is not None and lower is not None:
+        h_str = color.lstrip("#")
+        fill_rgba = "rgba({},{},{},0.25)".format(
+            int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16))
+        bw = x_zoom_r * 0.12
+        fig.add_trace(go.Scatter(
+            x=[x_c - bw, x_c - bw, x_c + bw, x_c + bw, x_c - bw],
+            y=[lower,    upper,    upper,    lower,    lower],
+            mode="lines", fill="toself", fillcolor=fill_rgba,
+            line=dict(width=0),
+            name="_bub_ribbon", showlegend=False, hoverinfo="skip",
+        ))
 
     x_axis = dict(
         type="log" if x_log else "linear",
