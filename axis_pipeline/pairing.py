@@ -25,6 +25,7 @@ locally, but produces an inconsistent overall sequence).
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -200,10 +201,12 @@ def _enforce_monotonic_generic(
         if k in keep_set:
             out.append(p)
         else:
-            # Drop the pair but mark a status flag for diagnostics.
-            p.include = False
-            p.status = "monotonicity_violation"
-            out.append(p)
+            # Drop the pair but mark a status flag for diagnostics. Build a
+            # fresh PairedTick instead of mutating the caller's object —
+            # this function is called multiple times in the pipeline and
+            # in-place mutation leaked state between runs.
+            out.append(replace(p, include=False,
+                                status="monotonicity_violation"))
     return out
 
 
@@ -224,7 +227,9 @@ def _ols_fit(
         return None
     use_log = bool(np.all(values > 0) and np.ptp(np.log10(values.astype(float))) >= 1.0)
     y = np.log10(values.astype(float)) if use_log else values.astype(float)
-    if len(set(float(v) for v in y)) < 2:
+    # Tolerance-based uniqueness: a Python `set` over floats is exact equality
+    # and can mis-count near-duplicates produced by log10 rounding.
+    if len(np.unique(np.round(y, 9))) < 2:
         return None
     try:
         slope, intercept = np.polyfit(tick_px.astype(float), y, 1)
@@ -236,43 +241,40 @@ def _ols_fit(
 def _loss_based_extension(
     initial: List[Tuple[int, int, float]],
     label_positions: np.ndarray,
-    label_values: List,
+    label_values: List[float],
     tick_positions: np.ndarray,
     soft_max: float,
 ) -> List[Tuple[int, int, float]]:
     """Extend initial greedy matching using OLS calibration as a loss function.
 
     After the hard-distance greedy match, many labels may remain unmatched
-    because they fall just beyond max_distance.  This pass fits an OLS line to
+    because they fall just beyond max_distance. This pass fits an OLS line to
     the initial pairs, then accepts additional (label, tick) pairs within
     soft_max if their OLS residual is within a tolerance derived from the
     initial pairs.
 
     Accepts a fallback for empty initial: tries soft_max greedy directly.
+
+    Precondition: `label_values` contains no None entries. Callers must
+    filter records before calling this; index `i` in `initial` and in the
+    returned tuples references the same `label_positions` / `label_values`
+    array.
     """
     used_l = {i for i, _, _ in initial}
     used_t = {j for _, j, _ in initial}
 
     if not initial:
-        # Nothing from the hard pass — try soft threshold directly
-        rem_positions = np.array(
-            [label_positions[i] for i in range(len(label_positions))
-             if label_values[i] is not None], dtype=float)
-        rem_orig_idx = [i for i in range(len(label_positions))
-                        if label_values[i] is not None]
-        soft_raw = _greedy_one_to_one(rem_positions, tick_positions, soft_max)
-        return [(rem_orig_idx[ri], ti, d) for ri, ti, d in soft_raw]
+        # Nothing from the hard pass — try soft threshold directly.
+        soft_raw = _greedy_one_to_one(label_positions, tick_positions, soft_max)
+        return soft_raw
 
-    rem_l = [i for i in range(len(label_positions))
-             if i not in used_l and label_values[i] is not None]
+    rem_l = [i for i in range(len(label_positions)) if i not in used_l]
     rem_t = [j for j in range(len(tick_positions)) if j not in used_t]
     if not rem_l or not rem_t:
         return initial
 
-    init_px = np.array([tick_positions[j] for i, j, _ in initial
-                        if label_values[i] is not None], dtype=float)
-    init_vals = np.array([label_values[i] for i, j, _ in initial
-                          if label_values[i] is not None], dtype=float)
+    init_px = np.array([tick_positions[j] for _, j, _ in initial], dtype=float)
+    init_vals = np.array([label_values[i] for i, _, _ in initial], dtype=float)
     fit = _ols_fit(init_px, init_vals)
     if fit is None:
         return initial
@@ -281,7 +283,7 @@ def _loss_based_extension(
     init_residuals = []
     for i, j, _ in initial:
         v = label_values[i]
-        if v is None or (use_log and v <= 0):
+        if use_log and v <= 0:
             continue
         a = math.log10(v) if use_log else float(v)
         init_residuals.append(abs(a - (slope * float(tick_positions[j]) + intercept)))
@@ -295,7 +297,7 @@ def _loss_based_extension(
             if px_dist > soft_max:
                 continue
             v = label_values[i]
-            if v is None or (use_log and v <= 0):
+            if use_log and v <= 0:
                 continue
             a = math.log10(v) if use_log else float(v)
             candidates.append((abs(a - predicted), px_dist, i, j))
@@ -319,19 +321,29 @@ def _loss_based_extension(
 # Public pairing entry points
 # ----------------------------------------------------------------------
 
-def pair_x(
+def _pair_axis(
     records: List[OCRRecord],
     grid: GridFit,
-    bbox,
     *,
+    center_index: int,
+    fixed_axis_pixel: float,
     max_distance: float,
 ) -> List[PairedTick]:
-    """Pair x-axis OCR labels to fitted geometric x-tick positions."""
-    label_positions = np.array([r.center[0] for r in records], dtype=float)
-    tick_positions = np.array(grid.fitted_positions, dtype=float)
-    assignments = _greedy_one_to_one(label_positions, tick_positions, max_distance)
+    """Shared pairing kernel for x/y. Filters out non-numeric records up
+    front so all downstream code (greedy matching, OLS extension) works
+    against a clean numeric-only view and index alignment is unambiguous.
+    """
+    # Keep only records with parsed numeric values. `is_numeric=True` is
+    # already implied by upstream filters, but stay defensive: a future
+    # caller could pass raw records.
+    numeric_records: List[OCRRecord] = [r for r in records if r.value is not None]
 
-    label_values = [r.value for r in records]
+    label_positions = np.array(
+        [r.center[center_index] for r in numeric_records], dtype=float)
+    label_values: List[float] = [float(r.value) for r in numeric_records]
+    tick_positions = np.array(grid.fitted_positions, dtype=float)
+
+    assignments = _greedy_one_to_one(label_positions, tick_positions, max_distance)
     soft_max = min(max_distance * 2.0, 80.0)
     assignments = _loss_based_extension(
         assignments, label_positions, label_values, tick_positions, soft_max,
@@ -339,13 +351,11 @@ def pair_x(
 
     paired: List[PairedTick] = []
     for i, j, d in assignments:
-        rec = records[i]
-        if rec.value is None:
-            continue
+        rec = numeric_records[i]
         grid_idx = grid.fitted_indices[j] if j < len(grid.fitted_indices) else None
         paired.append(PairedTick(
             pixel_position=float(tick_positions[j]),
-            fixed_axis_pixel=float(bbox.bottom),
+            fixed_axis_pixel=float(fixed_axis_pixel),
             data_value=float(rec.value),
             pair_distance_px=float(d),
             grid_index=grid_idx,
@@ -358,8 +368,24 @@ def pair_x(
             include=True,
             status="paired_to_tick_mark",
         ))
-    paired = _enforce_monotonic_x(paired)
     return paired
+
+
+def pair_x(
+    records: List[OCRRecord],
+    grid: GridFit,
+    bbox,
+    *,
+    max_distance: float,
+) -> List[PairedTick]:
+    """Pair x-axis OCR labels to fitted geometric x-tick positions."""
+    paired = _pair_axis(
+        records, grid,
+        center_index=0,
+        fixed_axis_pixel=bbox.bottom,
+        max_distance=max_distance,
+    )
+    return _enforce_monotonic_x(paired)
 
 
 def pair_y(
@@ -370,36 +396,10 @@ def pair_y(
     max_distance: float,
 ) -> List[PairedTick]:
     """Pair y-axis OCR labels to fitted geometric y-tick positions."""
-    label_positions = np.array([r.center[1] for r in records], dtype=float)
-    tick_positions = np.array(grid.fitted_positions, dtype=float)
-    assignments = _greedy_one_to_one(label_positions, tick_positions, max_distance)
-
-    label_values = [r.value for r in records]
-    soft_max = min(max_distance * 2.0, 80.0)
-    assignments = _loss_based_extension(
-        assignments, label_positions, label_values, tick_positions, soft_max,
+    paired = _pair_axis(
+        records, grid,
+        center_index=1,
+        fixed_axis_pixel=bbox.left,
+        max_distance=max_distance,
     )
-
-    paired: List[PairedTick] = []
-    for i, j, d in assignments:
-        rec = records[i]
-        if rec.value is None:
-            continue
-        grid_idx = grid.fitted_indices[j] if j < len(grid.fitted_indices) else None
-        paired.append(PairedTick(
-            pixel_position=float(tick_positions[j]),
-            fixed_axis_pixel=float(bbox.left),
-            data_value=float(rec.value),
-            pair_distance_px=float(d),
-            grid_index=grid_idx,
-            label_bbox=tuple(rec.bbox),
-            raw_text=rec.raw_text,
-            cleaned_text=rec.cleaned_text,
-            ocr_confidence=rec.confidence,
-            parse_status=rec.parse_status,
-            flag=rec.parse_flag,
-            include=True,
-            status="paired_to_tick_mark",
-        ))
-    paired = _enforce_monotonic_y(paired)
-    return paired
+    return _enforce_monotonic_y(paired)

@@ -82,3 +82,26 @@ def test_missing_error_columns_does_not_crash():
     [t] = build_overlay_traces(df)
     assert not t.has_err.any()
     assert len(t.ribbon_x) == 0
+
+
+def test_overlay_trace_point_ids_default_is_empty_list():
+    """Regression: point_ids must default to a fresh empty list (no None,
+    no shared mutable default)."""
+    from plotverify_core.overlay_traces import OverlayTrace
+    arr = np.array([])
+    a = OverlayTrace(
+        series="A", x=arr, y=arr, has_err=arr.astype(bool),
+        err_array_plus=arr, err_array_minus=arr,
+        ribbon_x=arr, ribbon_y_upper=arr, ribbon_y_lower=arr,
+        color_hex="#000000", marker_color_hex="#ffffff", visible=True,
+    )
+    b = OverlayTrace(
+        series="B", x=arr, y=arr, has_err=arr.astype(bool),
+        err_array_plus=arr, err_array_minus=arr,
+        ribbon_x=arr, ribbon_y_upper=arr, ribbon_y_lower=arr,
+        color_hex="#000000", marker_color_hex="#ffffff", visible=True,
+    )
+    assert a.point_ids == []
+    assert b.point_ids == []
+    a.point_ids.append("A#0")
+    assert b.point_ids == []  # not shared

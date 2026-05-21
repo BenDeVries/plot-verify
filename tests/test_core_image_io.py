@@ -56,3 +56,34 @@ def test_hash_is_stable():
     a = decode_image_bytes(b)
     c = decode_image_bytes(b)
     assert a.image_hash == c.image_hash
+
+
+def test_image_load_warnings_default_is_empty_list():
+    """Regression: warnings field must default to a fresh empty list (no None,
+    no shared mutable default)."""
+    from plotverify_core.image_io import ImageLoad
+    a = ImageLoad(img_bgr=None, img_rgb=None, image_hash="x")
+    b = ImageLoad(img_bgr=None, img_rgb=None, image_hash="y")
+    assert a.warnings == []
+    assert b.warnings == []
+    a.warnings.append("only on a")
+    assert b.warnings == []  # not shared
+
+
+def test_decode_and_maybe_downscale_raises_on_silent_none():
+    """If decode_image_bytes returned no error but also no array, surface the
+    inconsistency as a RuntimeError rather than asserting (which is stripped
+    under `python -O`)."""
+    import plotverify_core.image_io as image_io
+
+    def fake_decode(_b):
+        return image_io.ImageLoad(img_bgr=None, img_rgb=None,
+                                   image_hash="x", error=None)
+
+    orig = image_io.decode_image_bytes
+    image_io.decode_image_bytes = fake_decode
+    try:
+        with pytest.raises(RuntimeError, match="no image array"):
+            image_io.decode_and_maybe_downscale(b"")
+    finally:
+        image_io.decode_image_bytes = orig

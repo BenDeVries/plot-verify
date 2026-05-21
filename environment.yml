@@ -1,0 +1,42 @@
+# Conda environment for PlotVerify (Shiny release target).
+#
+# Create with:    conda env create -f environment.yml
+# Update with:    conda env update -f environment.yml --prune
+#
+# The pip-installable equivalent lives in requirements.txt; this file is
+# the recommended path because EasyOCR + PyTorch are easier to install
+# via conda-forge (CPU-only by default to avoid pulling CUDA).
+
+name: plotverify
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+
+  # PyTorch (CPU-only) — EasyOCR's required backend.
+  - cpuonly
+  - pytorch
+  - torchvision
+  - torchaudio
+
+  # Core numeric / image stack
+  - scipy
+  - opencv
+
+  # Visualization
+  - plotly
+
+  # OCR
+  - easyocr
+
+  # Shiny UI layer
+  - shiny
+  - shinywidgets>=0.3
+  - faicons>=0.2
+  - anywidget
+
+  # Test runner (pip — pytest 9.x isn't yet on conda-forge with our pins).
+  - pip
+  - pip:
+    - pytest>=8.0

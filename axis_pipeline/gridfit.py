@@ -45,14 +45,20 @@ def _modal_spacing(diffs: np.ndarray, cluster_tol_px: float = 8.0) -> Optional[f
     Diffs from a regular grid cluster tightly; diffs that span an irregular
     gap (a missing tick or a stray detection) are isolated singletons and
     should not influence the modal estimate.
+
+    Clustering compares each new diff against the cluster's current median
+    rather than its most recently added element — otherwise a chain of
+    small steps could transitively drift one cluster across an arbitrarily
+    wide range of values.
     """
     if diffs.size == 0:
         return None
     sd = np.sort(diffs)
-    # Greedy clustering: consecutive sorted diffs within cluster_tol_px form a cluster.
+    # Greedy clustering: consecutive sorted diffs within cluster_tol_px of
+    # the cluster median form a cluster.
     clusters: List[List[float]] = [[float(sd[0])]]
     for d in sd[1:]:
-        if abs(d - clusters[-1][-1]) <= cluster_tol_px:
+        if abs(d - float(np.median(clusters[-1]))) <= cluster_tol_px:
             clusters[-1].append(float(d))
         else:
             clusters.append([float(d)])

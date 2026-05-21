@@ -619,7 +619,9 @@ def _band_ocr_with_fallback(
         # text and can produce a false-confident calibration on otherwise
         # ambiguous plots.
         img_w = img_bgr.shape[1]
-        extend_right = 25 if (img_w - int(bbox.right)) < 30 else 0
+        extend_right = (cfg.x_band_extend_outward_px
+                        if (img_w - int(bbox.right)) < cfg.x_band_right_edge_threshold_px
+                        else 0)
         _x_slide = cfg.x_band_y_offset
         def compute_band(extra, _h=horiz, _e=extend_right, _s=_x_slide):
             b = ocr_mod.x_label_band(bbox, extra_below=extra,
