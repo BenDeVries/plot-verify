@@ -7,7 +7,7 @@ future Shiny renderer can do the same with shinywidgets / custom JS.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -35,7 +35,7 @@ class OverlayTrace:
     visible: bool
     # Global point IDs matching EditableOverlay (e.g. "SeriesA#3"). Index is
     # the global DataFrame row position, not a series-local index.
-    point_ids: List[str] = None  # type: ignore[assignment]
+    point_ids: List[str] = field(default_factory=list)
 
 
 def build_overlay_traces(

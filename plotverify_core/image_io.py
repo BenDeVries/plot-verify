@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 import cv2
@@ -29,11 +29,7 @@ class ImageLoad:
     image_hash: str
     error: Optional[str] = None
     downscale_factor: float = 1.0
-    warnings: List[str] = None  # type: ignore
-
-    def __post_init__(self):
-        if self.warnings is None:
-            self.warnings = []
+    warnings: List[str] = field(default_factory=list)
 
 
 def hash_bytes(data: bytes) -> str:
@@ -79,7 +75,8 @@ def decode_and_maybe_downscale(
     if load.error is not None:
         return load
 
-    assert load.img_bgr is not None
+    if load.img_bgr is None:
+        raise RuntimeError("decode produced no image array despite no error")
     h, w = load.img_bgr.shape[:2]
     max_edge_actual = max(h, w)
     size_bytes = len(img_bytes)

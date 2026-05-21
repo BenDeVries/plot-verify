@@ -352,13 +352,20 @@ def crop_band(
     img_bgr: np.ndarray,
     band: Tuple[int, int, int, int],
 ) -> Tuple[np.ndarray, Tuple[int, int]]:
-    """Return a cropped sub-image plus the (dx, dy) offset to map crop coords back."""
+    """Return a cropped sub-image plus the (dx, dy) offset to map crop coords back.
+
+    A degenerate band (x1 <= x0 or y1 <= y0 after clamping) returns a
+    zero-size array so callers can skip cleanly. Previously this returned
+    the full image with offset (0, 0), which silently caused band OCR to
+    run on the entire image with the wrong coordinate frame.
+    """
     h, w = img_bgr.shape[:2]
     x0, y0, x1, y1 = band
     x0 = max(0, int(x0)); y0 = max(0, int(y0))
     x1 = min(w, int(x1)); y1 = min(h, int(y1))
     if x1 <= x0 or y1 <= y0:
-        return img_bgr.copy(), (0, 0)
+        return np.zeros((0, 0, img_bgr.shape[2] if img_bgr.ndim == 3 else 1),
+                        dtype=img_bgr.dtype), (0, 0)
     return img_bgr[y0:y1, x0:x1].copy(), (x0, y0)
 
 

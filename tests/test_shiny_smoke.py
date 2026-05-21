@@ -199,3 +199,69 @@ def test_anchors_from_result_falls_back():
     """If the calibration has no result, anchors_from_result returns the fallback."""
     fallback = Anchors(p1_pixel=(1, 2), p2_pixel=(3, 4), p3_pixel=(5, 6))
     assert anchors_from_result(None, fallback) is fallback
+
+
+def test_stale_file_id_returns_none_via_get():
+    """Regression for Phase 1: a `file_id_rv` that lingers after the file was
+    removed from `pv.state.files` must surface as `None` via `.get(fid)`
+    rather than crashing with KeyError. The render-side panels in
+    `shiny_app/app.py` rely on this idiom."""
+    pv = PlotVerifyApp()
+    fid = pv.add_image(TEST_IMAGE.name, TEST_IMAGE.read_bytes())
+    assert pv.state.files.get(fid) is not None
+    pv.state.remove_file(fid)
+    assert pv.state.files.get(fid) is None
+    # And a never-seen fid is also safe.
+    assert pv.state.files.get("not-a-real-fid") is None
+
+
+def test_safe_int_falls_back_and_traces():
+    """Phase 3: _safe_int returns the default when the getter raises and
+    emits a trace event (visible under PLOTVERIFY_TRACE=1)."""
+    from shiny_app import app as app_mod
+
+    def raising():
+        raise RuntimeError("input not bound")
+
+    traces = []
+    orig_trace = app_mod._trace
+    app_mod._trace = lambda tag, **kw: traces.append((tag, kw))
+    try:
+        assert app_mod._safe_int(raising, 90, "band_y_extra") == 90
+    finally:
+        app_mod._trace = orig_trace
+    assert any("safe_int_fallback" in t for t, _ in traces)
+
+
+def test_safe_int_coerces_valid_input():
+    from shiny_app import app as app_mod
+    assert app_mod._safe_int(lambda: "42", 0) == 42
+    assert app_mod._safe_int(lambda: None, 7) == 7  # `or` fallback
+    assert app_mod._safe_int(lambda: 0, 5) == 5     # `or` treats 0 as falsy
+    assert app_mod._safe_int(lambda: 3, 5) == 3
+
+
+def test_safe_float_and_safe_str():
+    from shiny_app import app as app_mod
+    assert app_mod._safe_float(lambda: "3.14", 0.0) == 3.14
+    assert app_mod._safe_float(lambda: None, 0.1) == 0.1
+    assert app_mod._safe_str(lambda: "Overlay", "Calibrate") == "Overlay"
+    assert app_mod._safe_str(lambda: None, "Calibrate") == "Calibrate"
+
+
+def test_user_error_traces_even_without_shiny_session():
+    """_user_error must not raise when invoked outside a Shiny session
+    (notifications fail, but tracing still happens)."""
+    from shiny_app import app as app_mod
+
+    traces = []
+    orig_trace = app_mod._trace
+    app_mod._trace = lambda tag, **kw: traces.append((tag, kw))
+    try:
+        # Should not raise even though there's no active Shiny session for
+        # ui.notification_show to attach to.
+        app_mod._user_error("Test failure", RuntimeError("boom"))
+    finally:
+        app_mod._trace = orig_trace
+    # The error trace fires unconditionally.
+    assert any("Test failure.error" == t for t, _ in traces)

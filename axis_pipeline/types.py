@@ -215,6 +215,13 @@ class CalibrationConfig:
     # Slide the whole x-band vertically (px; positive = down = away from axis).
     # Negative values shift the band up into the plot area for inward tick labels.
     x_band_y_offset: int = 0
+    # When bbox.right is within `x_band_right_edge_threshold_px` of the image's
+    # right edge, extend the x-band rightward by `x_band_extend_outward_px` so
+    # the rightmost tick label (which often overhangs the bbox) isn't clipped.
+    # Only triggers near the edge — extending unconditionally pulls in
+    # unrelated text on plots with room to the right of bbox.
+    x_band_extend_outward_px: int = 25
+    x_band_right_edge_threshold_px: int = 30
     # Fallback band sizes — used only if the narrow band returns 0 numeric records.
     # Wider bands risk capturing axis titles, but rescue plots where tick labels
     # sit unusually far from the axis (large fonts, multi-line label formats).

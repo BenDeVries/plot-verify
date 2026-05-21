@@ -1,8 +1,27 @@
-numpy>=1.24
-scipy>=1.10
-pandas>=2.0
-Pillow>=10.0
-opencv-python-headless>=4.8
-plotly>=5.18
-streamlit>=1.30
-easyocr>=1.7
+# Production runtime dependencies for PlotVerify.
+#
+# Upper bounds protect against unannounced major-version breakages from
+# upstream while still allowing patch + minor updates. Bump deliberately
+# after a release has been validated against the new major.
+#
+# A conda environment file (`environment.yml`) is also provided for
+# contributors who manage envs via conda.
+
+# Core numeric / image stack
+numpy>=1.24,<3.0
+scipy>=1.10,<2.0
+pandas>=2.0,<4.0
+Pillow>=10.0,<13.0
+opencv-python-headless>=4.8,<5.0
+
+# Visualization
+plotly>=5.18,<7.0
+
+# UI layer — Shiny is the release target. The legacy Streamlit app
+# (`app_auto_axis.py`) is being phased out and is not listed as a
+# runtime dependency.
+shiny>=1.0,<2.0
+shinywidgets>=0.5,<1.0
+
+# OCR (Shiny falls back to manual calibration when missing)
+easyocr>=1.7,<2.0

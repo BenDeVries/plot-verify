@@ -43,6 +43,57 @@ def _trace(tag: str, **kw) -> None:
         extras = " ".join(f"{k}={v}" for k, v in kw.items())
         _log.info("[%s] %s", tag, extras)
 
+
+def _user_error(label: str, exc: BaseException) -> None:
+    """Surface an unexpected exception to the user as a toast and trace it.
+
+    Replaces the legacy `except Exception: pass` pattern that silently
+    swallowed failures. Use only for unexpected errors — defensive catches
+    around input bindings that fire before the UI is ready should call
+    `_trace` directly instead so they don't spam toasts on every render.
+    """
+    _trace(f"{label}.error", error=repr(exc))
+    try:
+        ui.notification_show(f"{label}: {exc}", type="error", duration=8)
+    except Exception:
+        # Notification API can fail outside of a Shiny session (tests,
+        # one-off scripts). Tracing already happened above.
+        pass
+
+
+def _safe_int(getter, default: int, label: str = "input") -> int:
+    """Read an int-coercible Shiny input value, falling back if unbound.
+
+    Shiny inputs raise during the brief window before they're bound to the
+    UI; the band-slider readers were previously a six-deep try/except
+    pyramid that silently defaulted. This helper does the same fallback
+    but emits a trace so the fallback path is observable in trace mode.
+    """
+    try:
+        return int(getter() or default)
+    except Exception as exc:
+        _trace(f"{label}.safe_int_fallback", default=default, error=repr(exc))
+        return default
+
+
+def _safe_float(getter, default: float, label: str = "input") -> float:
+    """Float counterpart to `_safe_int`."""
+    try:
+        return float(getter() or default)
+    except Exception as exc:
+        _trace(f"{label}.safe_float_fallback", default=default, error=repr(exc))
+        return default
+
+
+def _safe_str(getter, default: str, label: str = "input") -> str:
+    """String counterpart for `or`-able Shiny string inputs."""
+    try:
+        return getter() or default
+    except Exception as exc:
+        _trace(f"{label}.safe_str_fallback", default=default, error=repr(exc))
+        return default
+
+
 from axis_pipeline import (
     CalibrationConfig,
     detect_axis_frame,
@@ -553,7 +604,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         cached = image_uri_cache.get(fid)
         if cached is not None:
             return cached
-        fs = pv.state.files[fid]
+        fs = pv.state.files.get(fid)
+        if fs is None:
+            raise KeyError(f"file_id {fid!r} not in state")
         t0 = time.perf_counter()
         uri = encode_image_data_uri(fs.image_rgb)
         _trace("encode_image", file_id=fid, ms=int((time.perf_counter() - t0) * 1000),
@@ -613,8 +666,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                             p1_data_y=new_anchors.p1_data_y,
                             p3_data_y=new_anchors.p3_data_y,
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _trace("upload_auto_detect.error", error=repr(exc))
                 p.set(1.0)
         # Suppress the input→anchors echo while we set defaults: when the
         # manual-values panel first mounts its inputs default to 0.0, and
@@ -721,7 +774,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # rebuilds after auto/manual calibration applies (which may also
         # change `show_diagnostic`).
         _ = cal_revision()
-        if fid is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
             return go.FigureWidget(go.Figure(
                 layout=dict(height=620, plot_bgcolor="#fafafa",
                             annotations=[dict(
@@ -730,12 +784,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                                 xref="paper", yref="paper",
                                 font=dict(size=16, color="#555"),
                             )])))
-        fs = pv.state.files[fid]
         diag = None
         if show_diagnostic() and fs.detection_result is not None:
             try:
                 diag = render_overlay(fs.image_bgr, fs.detection_result)
-            except Exception:
+            except Exception as exc:
+                _trace("cal_plot.diagnostic_overlay_error", error=repr(exc))
                 diag = None
         with reactive.isolate():
             initial_anchors = anchors_rv()
@@ -754,30 +808,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             _y_extra, _y_vert, _y_slide = 90, 0, 0
             _x_extra, _x_horiz, _x_slide = 28, 0, 0
             if _frame is not None:
-                try:
-                    _y_extra = int(input.band_y_extra() or 90)
-                except Exception:
-                    pass
-                try:
-                    _y_vert = int(input.band_y_vert() or 0)
-                except Exception:
-                    pass
-                try:
-                    _y_slide = int(input.band_y_slide() or 0)
-                except Exception:
-                    pass
-                try:
-                    _x_extra = int(input.band_x_extra() or 28)
-                except Exception:
-                    pass
-                try:
-                    _x_horiz = int(input.band_x_horiz() or 0)
-                except Exception:
-                    pass
-                try:
-                    _x_slide = int(input.band_x_slide() or 0)
-                except Exception:
-                    pass
+                _y_extra = _safe_int(input.band_y_extra, 90, "band_y_extra")
+                _y_vert = _safe_int(input.band_y_vert, 0, "band_y_vert")
+                _y_slide = _safe_int(input.band_y_slide, 0, "band_y_slide")
+                _x_extra = _safe_int(input.band_x_extra, 28, "band_x_extra")
+                _x_horiz = _safe_int(input.band_x_horiz, 0, "band_x_horiz")
+                _x_slide = _safe_int(input.band_x_slide, 0, "band_x_slide")
         if _frame is not None:
             _yb_raw = y_label_band(_frame, extra_left=_y_extra, extra_vertical=_y_vert)
             _yb = (_yb_raw[0] + _y_slide, _yb_raw[1], _yb_raw[2] + _y_slide, _yb_raw[3])
@@ -883,30 +919,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             with widget.batch_update():
                 widget.layout.shapes = []
             return
-        try:
-            y_extra = int(input.band_y_extra() or 90)
-        except Exception:
-            y_extra = 90
-        try:
-            y_vert = int(input.band_y_vert() or 0)
-        except Exception:
-            y_vert = 0
-        try:
-            y_slide = int(input.band_y_slide() or 0)
-        except Exception:
-            y_slide = 0
-        try:
-            x_extra = int(input.band_x_extra() or 28)
-        except Exception:
-            x_extra = 28
-        try:
-            x_horiz = int(input.band_x_horiz() or 0)
-        except Exception:
-            x_horiz = 0
-        try:
-            x_slide = int(input.band_x_slide() or 0)
-        except Exception:
-            x_slide = 0
+        y_extra = _safe_int(input.band_y_extra, 90, "band_y_extra")
+        y_vert = _safe_int(input.band_y_vert, 0, "band_y_vert")
+        y_slide = _safe_int(input.band_y_slide, 0, "band_y_slide")
+        x_extra = _safe_int(input.band_x_extra, 28, "band_x_extra")
+        x_horiz = _safe_int(input.band_x_horiz, 0, "band_x_horiz")
+        x_slide = _safe_int(input.band_x_slide, 0, "band_x_slide")
         _yb = y_label_band(frame, extra_left=y_extra, extra_vertical=y_vert)
         yb = (_yb[0] + y_slide, _yb[1], _yb[2] + y_slide, _yb[3])
         _xb = x_label_band(frame, extra_below=x_extra, extra_horizontal=x_horiz)
@@ -974,9 +992,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @render.ui
     def cal_summary():
         fid = file_id_rv()
-        if fid is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
             return ui.div()
-        fs = pv.state.files[fid]
         res = fs.detection_result
         if res is None:
             return ui.tags.em("No calibration applied yet.")
@@ -1081,19 +1099,14 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 "Use Manual Values instead.", type="warning",
             )
             return
-        def _si(getter, default):
-            try:
-                return int(getter() or default)
-            except Exception:
-                return default
         cfg = CalibrationConfig(
-            y_band_extra_px=_si(input.band_y_extra, 90),
-            y_band_extra_vertical_px=_si(input.band_y_vert, 0),
-            y_band_x_offset=_si(input.band_y_slide, 0),
-            x_band_extra_px=_si(input.band_x_extra, 28),
-            x_band_extra_horizontal_px=_si(input.band_x_horiz, 0),
-            x_band_y_offset=_si(input.band_x_slide, 0),
-            min_ocr_confidence=float(input.cfg_min_ocr_conf() or 0.20),
+            y_band_extra_px=_safe_int(input.band_y_extra, 90, "band_y_extra"),
+            y_band_extra_vertical_px=_safe_int(input.band_y_vert, 0, "band_y_vert"),
+            y_band_x_offset=_safe_int(input.band_y_slide, 0, "band_y_slide"),
+            x_band_extra_px=_safe_int(input.band_x_extra, 28, "band_x_extra"),
+            x_band_extra_horizontal_px=_safe_int(input.band_x_horiz, 0, "band_x_horiz"),
+            x_band_y_offset=_safe_int(input.band_x_slide, 0, "band_x_slide"),
+            min_ocr_confidence=_safe_float(input.cfg_min_ocr_conf, 0.20, "cfg_min_ocr_conf"),
         )
         with ui.Progress(min=0, max=1) as p:
             p.set(0.1, message="Running OCR + geometry…")
@@ -1118,9 +1131,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @reactive.event(input.detect_frame)
     def _detect_axis_frame_only():
         fid = file_id_rv()
-        if fid is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
             return
-        fs = pv.state.files[fid]
         try:
             preview = detect_axis_frame(fs.image_bgr)
         except Exception as e:
@@ -1147,9 +1160,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @reactive.event(input.reset_anchors)
     def _reset_anchors_to_default():
         fid = file_id_rv()
-        if fid is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
             return
-        fs = pv.state.files[fid]
         h, w = fs.image_rgb.shape[:2]
         anchors_rv.set(default_anchors_for_image(w, h))
         _bump_cal()
@@ -1359,7 +1372,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             try:
                 cur_range = widget.layout.yaxis.range
                 y_zoom_r = abs(cur_range[1] - cur_range[0]) / 2 if cur_range else y_full * 0.05
-            except Exception:
+            except Exception as exc:
+                _trace("zoom_bubble.yaxis_range_error", error=repr(exc))
                 y_zoom_r = y_full * 0.05
 
         x_lo_p, x_hi_p = focus_xp - x_zoom_r, focus_xp + x_zoom_r
@@ -1422,10 +1436,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return
-        try:
-            base_step = float(input.overlay_arrow_step() or 0.1)
-        except Exception:
-            base_step = 0.1
+        base_step = _safe_float(input.overlay_arrow_step, 0.1, "overlay_arrow_step")
         step = base_step * shift_mult
         dx = dy = 0.0
         if key == "ArrowRight":
@@ -1457,10 +1468,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             else:
                 new_lower = float(pt.y) + dy
 
-        try:
-            sym = input.force_symmetry()
-        except Exception:
-            sym = "none"
+        sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
         new_x, new_y, new_upper, new_lower = _apply_symmetry(
             new_x, new_y, new_upper, new_lower, sym)
 
@@ -1599,9 +1607,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @render.ui
     def calib_points_panel():
         fid = file_id_rv()
-        if fid is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
             return ui.tags.em("No file loaded.")
-        fs = pv.state.files[fid]
         res = fs.detection_result
         if res is None or not res.success:
             return ui.tags.em("Run detection (auto) or apply Manual Values to populate.")
@@ -1709,7 +1717,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                         and round(float(p3x), 2) == round(a.p3_pixel[0], 2)
                         and round(float(p3y), 2) == round(a.p3_pixel[1], 2)):
                     syncing["shapes_to_inputs"] = False
-            except Exception:
+            except Exception as exc:
+                _trace("anchors_sync.compare_error", error=repr(exc))
                 syncing["shapes_to_inputs"] = False
             return
         try:
@@ -1721,7 +1730,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 input.p1_data_y(), input.p3_data_y(),
                 input.x_log_base(), input.y_log_base(),
             )
-        except Exception:
+        except Exception as exc:
+            _trace("inputs_to_anchors.read_error", error=repr(exc))
             return
         if any(v is None for v in vals[:6]):
             return
@@ -1764,9 +1774,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @render.ui
     def warnings_panel():
         fid = file_id_rv()
-        if fid is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
             return ui.tags.em("No file loaded.")
-        fs = pv.state.files[fid]
         res = fs.detection_result
         if res is None:
             return ui.tags.em("No detection run yet.")
@@ -1785,10 +1795,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # cheap empty figure. This is the biggest win for upload time — the
         # image used to be PNG-encoded twice (cal_plot + overlay_plot) on
         # every upload, even though the Overlay tab is hidden.
-        try:
-            active = input.main_nav()
-        except Exception:
-            active = "Calibrate"
+        active = _safe_str(input.main_nav, "Calibrate", "main_nav")
         if active != "Overlay":
             return go.FigureWidget(go.Figure(layout=dict(height=620, autosize=True)))
         _trace("overlay_plot.render")
@@ -1803,7 +1810,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                                 xref="paper", yref="paper",
                                 font=dict(size=16, color="#555"),
                             )])))
-        fs = pv.state.files[fid]
+        fs = pv.state.files.get(fid)
+        if fs is None:
+            return go.FigureWidget(go.Figure(
+                layout=dict(height=620, plot_bgcolor="#fafafa")))
         cal = cal_dict_from_result(fs.detection_result)
         if fs.csv_df is None or fs.overlay is None:
             fig = build_data_overlay_figure(fs.image_rgb, [], {"applied": False})
@@ -1818,7 +1828,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         for name in df["series"].drop_duplicates().tolist():
             try:
                 visibility[name] = bool(input[_vis_id(name)]())
-            except Exception:
+            except Exception as exc:
+                _trace("overlay_plot.visibility_read_error",
+                       series=name, error=repr(exc))
                 visibility[name] = True
         traces = build_overlay_traces(df, series_visibility=visibility,
                                        series_colors=fs.series_color_overrides)
@@ -1870,16 +1882,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 **getattr(widget, "_config", {}),
                 "displayModeBar": False,
             }
-        except Exception:
-            pass
+        except Exception as exc:
+            _trace("zoom_bubble.config_error", error=repr(exc))
         return widget
 
     @render.ui
     def series_visibility_panel():
         fid = file_id_rv()
-        if fid is None or pv.state.files[fid].csv_df is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.csv_df is None:
             return ui.tags.em("Load a CSV to toggle series visibility.")
-        fs = pv.state.files[fid]
         items = []
         for name in fs.csv_df["series"].drop_duplicates().tolist():
             items.append(ui.input_checkbox(_vis_id(name), str(name), value=True))
@@ -1911,9 +1923,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     def edit_point_panel():
         fid = file_id_rv()
         _ = overlay_revision()
-        if fid is None or pv.state.files[fid].overlay is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.overlay is None:
             return ui.tags.em("Load a CSV to enable point editing.")
-        fs = pv.state.files[fid]
         ids = [p.point_id for p in fs.overlay.points()]
         if not ids:
             return ui.tags.em("No points loaded.")
@@ -1934,14 +1946,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                       and np.isfinite(init_pt.y_err_lower) else 0.0)
         # Preserve arrow-step and symmetry settings across rebuilds.
         with reactive.isolate():
-            try:
-                cur_step = float(input.overlay_arrow_step() or 0.1)
-            except Exception:
-                cur_step = 0.1
-            try:
-                cur_sym = input.force_symmetry() or "none"
-            except Exception:
-                cur_sym = "none"
+            cur_step = _safe_float(input.overlay_arrow_step, 0.1,
+                                    "overlay_arrow_step")
+            cur_sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
         return ui.div(
             ui.output_ui("overlay_selection_status"),
             ui.input_select("edit_point_id", "Point", choices=ids,
@@ -1987,10 +1994,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @reactive.event(input.edit_point_id)
     def _populate_point_editor():
         fid = file_id_rv()
-        if fid is None or pv.state.files[fid].overlay is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.overlay is None:
             return
         pid = input.edit_point_id()
-        fs = pv.state.files[fid]
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return
@@ -2010,19 +2017,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @reactive.event(input.apply_point_edit)
     def _apply_point_edit():
         fid = file_id_rv()
-        if fid is None or pv.state.files[fid].overlay is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.overlay is None:
             return
         pid = input.edit_point_id()
-        fs = pv.state.files[fid]
         try:
             new_x = float(input.edit_point_x() or 0)
             new_y = float(input.edit_point_y() or 0)
             new_upper = float(input.edit_err_upper() or 0)
             new_lower = float(input.edit_err_lower() or 0)
-            try:
-                sym = input.force_symmetry() or "none"
-            except Exception:
-                sym = "none"
+            sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
             new_x, new_y, new_upper, new_lower = _apply_symmetry(
                 new_x, new_y, new_upper, new_lower, sym)
             fs.overlay.edit_point(pid, new_x, new_y)
@@ -2037,10 +2041,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @reactive.event(input.reset_point_edit)
     def _reset_point_edit():
         fid = file_id_rv()
-        if fid is None or pv.state.files[fid].overlay is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.overlay is None:
             return
         pid = input.edit_point_id()
-        fs = pv.state.files[fid]
         try:
             fs.overlay.reset_point(pid)
         except Exception as e:
@@ -2075,7 +2079,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             new_y = float(input.edit_point_y())
             new_upper = float(input.edit_err_upper())
             new_lower = float(input.edit_err_lower())
-        except Exception:
+        except Exception as exc:
+            _trace("live_update.read_inputs_error", error=repr(exc))
             return
         if pid is None:
             return
@@ -2091,10 +2096,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 and abs(new_upper - cur_upper) < 1e-10
                 and abs(new_lower - cur_lower) < 1e-10):
             return
-        try:
-            sym = input.force_symmetry() or "none"
-        except Exception:
-            sym = "none"
+        sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
         new_x, new_y, new_upper, new_lower = _apply_symmetry(
             new_x, new_y, new_upper, new_lower, sym)
         # Persist to model silently — no _bump_overlay, widget updated below.
@@ -2104,7 +2106,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 fs.overlay.edit_err_upper(pid, float(new_upper))
             if new_lower is not None:
                 fs.overlay.edit_err_lower(pid, float(new_lower))
-        except Exception:
+        except Exception as exc:
+            _user_error("Live point edit failed", exc)
             return
         # If symmetry derived a new value for the *other* bar, reflect it in
         # the corresponding input so the user sees the derived number.
@@ -2160,10 +2163,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @reactive.effect
     async def _sync_bubble_visibility():
         sel = selected_overlay_rv()
-        try:
-            active_tab = input.main_nav()
-        except Exception:
-            active_tab = "Calibrate"
+        active_tab = _safe_str(input.main_nav, "Calibrate", "main_nav")
         show = sel is not None and active_tab == "Overlay"
         await session.send_custom_message("pv_bubble_show", {"show": show})
 
@@ -2174,7 +2174,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @render.download(filename=lambda: input.export_filename() or "corrected.csv")
     def export_csv():
         fid = file_id_rv()
-        if fid is None or pv.state.files[fid].overlay is None:
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.overlay is None:
             yield b"# No CSV loaded.\n"
             return
         data = pv.export_csv(fid, include_audit_cols=bool(input.include_audit_cols()))
