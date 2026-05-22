@@ -1,0 +1,15 @@
+# Pyodide-installable runtime deps for the PlotVerify shinylive bundle.
+#
+# Differences vs the repo's top-level requirements.txt:
+#   - No easyocr (PyTorch is not available under Pyodide; the app falls
+#     back to manual-only calibration via ocr_available() == False).
+#   - opencv-python instead of opencv-python-headless; Pyodide ships
+#     opencv-python and both expose the same `cv2` import.
+#   - shiny + shinywidgets omitted; they are provided by the shinylive
+#     runtime itself.
+numpy
+scipy
+pandas
+Pillow
+opencv-python
+plotly
