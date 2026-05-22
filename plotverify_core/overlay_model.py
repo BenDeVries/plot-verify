@@ -16,6 +16,19 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
+from .colors import FALLBACK_HEX, is_valid_hex
+
+
+def _safe_color_hex(value) -> str:
+    """Coerce a raw cell value to a valid hex string, falling back to grey.
+
+    Handles ``pd.NA``, ``NaN``, ``None``, and non-string types — all of which
+    would otherwise stringify into garbage that Plotly rejects (e.g. ``"<NA>"``).
+    """
+    if isinstance(value, str) and is_valid_hex(value):
+        return value
+    return FALLBACK_HEX
+
 
 @dataclass
 class OverlayPoint:
@@ -57,7 +70,7 @@ class EditableOverlay:
                 y=float(row["y"]),
                 y_err_lower=_opt_float(row.get("y_err_lower")),
                 y_err_upper=_opt_float(row.get("y_err_upper")),
-                color_hex=str(row.get("series_color", "#888888")),
+                color_hex=_safe_color_hex(row.get("series_color")),
                 original_x=float(row["x"]),
                 original_y=float(row["y"]),
                 original_y_err_lower=_opt_float(row.get("y_err_lower")),
@@ -96,7 +109,7 @@ class EditableOverlay:
                 y=float(row["y"]),
                 y_err_lower=_opt_float(row.get("y_err_lower")),
                 y_err_upper=_opt_float(row.get("y_err_upper")),
-                color_hex=str(row.get("series_color", "#888888")),
+                color_hex=_safe_color_hex(row.get("series_color")),
                 original_x=float(row["original_x"]),
                 original_y=float(row["original_y"]),
                 original_y_err_lower=_opt_float(row.get("original_y_err_lower")),

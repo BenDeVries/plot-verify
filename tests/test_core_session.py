@@ -65,6 +65,26 @@ def test_per_file_state_defaults():
     assert s.is_calibrated() is False
     assert s.masking_choice == MaskingChoice.NO_MASK
     assert s.review_status == ReviewStatus.NOT_CALIBRATED
+    assert s.csv_has_series_color is False
+    assert s.series_delta_e == {}
+    assert s.series_color_overrides == {}
+
+
+def test_has_intentional_color_csv_supplied():
+    """When the CSV had a series_color column, every series is intentional."""
+    s = _state("x")
+    s.csv_has_series_color = True
+    assert s.has_intentional_color("A") is True
+    assert s.has_intentional_color("anything") is True
+
+
+def test_has_intentional_color_only_with_override():
+    """Without a CSV color column, only series with an override are intentional."""
+    s = _state("x")
+    assert s.has_intentional_color("A") is False
+    s.series_color_overrides["A"] = "#abcdef"
+    assert s.has_intentional_color("A") is True
+    assert s.has_intentional_color("B") is False
 
 
 def test_anchors_default_log_base_none():

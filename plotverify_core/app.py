@@ -95,6 +95,7 @@ class PlotVerifyApp:
         fs = self.state.files[file_id]
         fs.csv_filename = csv_filename
         fs.csv_df = df
+        fs.csv_has_series_color = report.has_series_color_column
         fs.overlay = EditableOverlay(df)
         fs.series_states = init_series_states(df)
         self.mark_dirty()

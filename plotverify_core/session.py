@@ -74,6 +74,14 @@ class PerFileState:
 
     series_states: Dict[str, SeriesState] = field(default_factory=dict)
     series_color_overrides: Dict[str, str] = field(default_factory=dict)
+    # Per-series ΔE Lab threshold for the optional overlay mask preview.
+    # Effective value when missing: DEFAULT_DELTA_E (10).
+    series_delta_e: Dict[str, int] = field(default_factory=dict)
+    # True iff the loaded CSV supplied a `series_color` column. Masking the
+    # source image (in the Overlay tab) is only available for series whose
+    # color is "intentional": either CSV-provided or user-picked via the
+    # Calibration tab color picker.
+    csv_has_series_color: bool = False
 
     masking_choice: MaskingChoice = MaskingChoice.NO_MASK
     mask_ready: bool = False
@@ -95,6 +103,18 @@ class PerFileState:
 
     def is_calibrated(self) -> bool:
         return bool(self.calibration.get("applied"))
+
+    def has_intentional_color(self, series_name: str) -> bool:
+        """Whether ``series_name`` has a color the user actually chose.
+
+        True when the CSV originally supplied ``series_color`` OR the user
+        picked a color via the UI override path. Used to gate ΔE mask preview:
+        auto-assigned palette defaults are good enough for rendering but not
+        meaningful for matching pixels in the source image.
+        """
+        if self.csv_has_series_color:
+            return True
+        return series_name in self.series_color_overrides
 
 
 @dataclass
