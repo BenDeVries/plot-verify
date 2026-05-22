@@ -98,3 +98,4 @@ P3 = topmost paired y-tick; its `data_x` is derived from the x-calibration at P3
 - `easyocr` — production OCR engine (lazy import in `ocr.py`; not needed if injecting a custom runner)
 - `opencv-python` (cv2), `numpy`, `scipy` — image processing and calibration math
 - `streamlit`, `plotly`, `pandas`, `Pillow` — UI layer
+
