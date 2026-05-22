@@ -7,12 +7,55 @@ colour) — the contrast requirement matters more than reproducibility.
 from __future__ import annotations
 
 import colorsys
-from typing import Tuple
+from typing import Iterable, List, Tuple
 
 import numpy as np
 
 
 FALLBACK_HEX = "#888888"
+
+# Plotly's "D3" qualitative palette. Used to assign default per-series colors
+# when the CSV does not supply a `series_color` column.
+DEFAULT_PALETTE: Tuple[str, ...] = (
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+)
+
+
+def assign_palette_colors(series_names: Iterable[str]) -> List[Tuple[str, str]]:
+    """Cycle through ``DEFAULT_PALETTE`` to assign a color per unique series.
+
+    Returns a list of ``(series_name, hex)`` pairs in the input order. Duplicate
+    names share a color (first occurrence wins).
+    """
+    seen: List[str] = []
+    for n in series_names:
+        if n not in seen:
+            seen.append(n)
+    return [(name, DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)])
+            for i, name in enumerate(seen)]
+
+
+def detect_background_color(img_bgr: np.ndarray) -> Tuple[int, int, int]:
+    """Return the BGR triplet of the most common luminance bucket.
+
+    Used by the masking compositor: pixels matched by a series's ΔE mask are
+    repainted in this color so the series visually disappears from the source
+    image (revealing the overlay drawn on top).
+    """
+    import cv2  # local import keeps the pure top-of-file lightweight
+    grey = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hist = np.bincount(grey.ravel(), minlength=256)
+    bg = int(np.argmax(hist))
+    return (bg, bg, bg)
 
 _rng = np.random.default_rng(12345)
 

@@ -105,6 +105,7 @@ from axis_pipeline import (
 from plotverify_core import (
     Anchors,
     PlotVerifyApp,
+    build_masked_overlay_image,
     build_overlay_traces,
     px_to_data,
 )
@@ -205,8 +206,13 @@ def _calibration_tab() -> ui.Tag:
                         ui.output_ui("manual_values_panel"),
                         value="manual_values",
                     ),
+                    ui.accordion_panel(
+                        "Series colors",
+                        ui.output_ui("series_color_panel"),
+                        value="series_colors",
+                    ),
                     id="right_accordion",
-                    open=["bands", "manual_values"],
+                    open=["bands", "manual_values", "series_colors"],
                     multiple=True,
                 ),
             ),
@@ -243,15 +249,19 @@ def _overlay_tab() -> ui.Tag:
                 min_height="660px",
             ),
             ui.card(
-                ui.card_header("Export"),
+                ui.card_header("Controls & export"),
+                ui.h6("Series"),
                 ui.output_ui("series_visibility_panel"),
-                ui.hr(),
-                ui.input_text("export_filename", "Filename", value="corrected.csv"),
-                ui.input_checkbox("include_audit_cols", "Include audit columns", value=False),
-                ui.download_button("export_csv", "Export updated CSV"),
                 ui.hr(),
                 ui.h6("Edit a point"),
                 ui.output_ui("edit_point_panel"),
+                ui.hr(),
+                ui.h6("Export"),
+                ui.input_text("export_filename", "Filename",
+                               value="corrected.csv"),
+                ui.input_checkbox("include_audit_cols",
+                                   "Include audit columns", value=False),
+                ui.download_button("export_csv", "Export updated CSV"),
             ),
             col_widths=(8, 4),
         ),
@@ -285,9 +295,32 @@ def _overlay_tab() -> ui.Tag:
     )
 
 
+def _safe_series_token(series_name: str) -> str:
+    """Sanitize a series name for use as a Shiny input ID suffix."""
+    return "".join(c if (c.isalnum() or c == "_") else "_" for c in series_name)
+
+
 def _vis_id(series_name: str) -> str:
     """Return a valid Shiny input ID for a series visibility checkbox."""
-    return "vis_" + "".join(c if (c.isalnum() or c == "_") else "_" for c in series_name)
+    return "vis_" + _safe_series_token(series_name)
+
+
+def _color_id(series_name: str) -> str:
+    """Return a valid Shiny input ID for a per-series color picker."""
+    return "col_" + _safe_series_token(series_name)
+
+
+def _delta_e_id(series_name: str) -> str:
+    """Return a valid Shiny input ID for a per-series ΔE threshold slider."""
+    return "de_" + _safe_series_token(series_name)
+
+
+def _mask_id(series_name: str) -> str:
+    """Return a valid Shiny input ID for a per-series mask-preview toggle."""
+    return "mask_" + _safe_series_token(series_name)
+
+
+DEFAULT_DELTA_E = 10
 
 
 _ANCHOR_KEY_SCRIPT = """<style>
@@ -530,6 +563,30 @@ _ANCHOR_KEY_SCRIPT = """<style>
             document.removeEventListener('mouseup',   onUp);
         }
     })();
+
+    // Per-series color picker bridge. Each <input class="pv-color-picker"
+    // data-input-id="col_<series>"> writes its value to Shiny on every change
+    // (and on the `input` event for live-updates while the picker is open).
+    // No priority:event — colors are persistent state, not one-shot events.
+    function bindColorPickers() {
+        document.querySelectorAll('input.pv-color-picker').forEach(function(el) {
+            if (el._pvBound) return;
+            el._pvBound = true;
+            function send() {
+                var id = el.getAttribute('data-input-id');
+                if (id && typeof Shiny !== 'undefined' && Shiny.setInputValue) {
+                    Shiny.setInputValue(id, el.value);
+                }
+            }
+            el.addEventListener('change', send);
+            el.addEventListener('input', send);
+            // Seed Shiny with the initial value so first-render reads work.
+            send();
+        });
+    }
+    bindColorPickers();
+    new MutationObserver(bindColorPickers).observe(
+        document.body, {childList: true, subtree: true});
 })();
 </script>"""
 
@@ -572,6 +629,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     anchors_rv = reactive.value(Anchors())    # current per-file anchors (mirror)
     cal_revision = reactive.value(0)          # bump after auto/manual calibration
     overlay_revision = reactive.value(0)      # bump after EditableOverlay edits
+    csv_revision = reactive.value(0)          # bump after CSV add/replace
     show_diagnostic = reactive.value(False)   # diagnostic-overlay toggle (placeholder)
     selected_anchor = reactive.value(None)    # "P1"/"P2"/"P3"/None — keyboard target
     axis_frame_rv = reactive.value(None)      # AxisFrame from detect_frame / auto-cal
@@ -599,6 +657,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     # data URI on every render is far cheaper than letting Plotly re-encode
     # the PIL source on each FigureWidget rebuild.
     image_uri_cache: dict[str, str] = {}
+    # Keyed by (fid, mask_signature) where signature is a frozenset of
+    # (series_name, color_hex, delta_e). Only series whose visibility is on
+    # AND whose color is intentional contribute to the signature.
+    masked_image_uri_cache: dict[tuple, str] = {}
 
     def _get_image_uri(fid: str) -> str:
         cached = image_uri_cache.get(fid)
@@ -612,6 +674,61 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         _trace("encode_image", file_id=fid, ms=int((time.perf_counter() - t0) * 1000),
                 bytes=len(uri))
         image_uri_cache[fid] = uri
+        return uri
+
+    def _compute_mask_specs(fs, df, mask_active: dict[str, bool]
+                             ) -> list[tuple[str, str, int]]:
+        """Collect (series, color_hex, delta_e) for series eligible for masking.
+
+        A series contributes a mask only when its mask toggle is ON AND its
+        color is intentional (CSV-provided or user-picked via the calibration
+        tab). Auto-palette defaults are skipped — they have no relation to the
+        actual pixel colors in the source image.
+        """
+        specs: list[tuple[str, str, int]] = []
+        for name in df["series"].drop_duplicates().tolist():
+            if not mask_active.get(name, False):
+                continue
+            if not fs.has_intentional_color(name):
+                continue
+            color_hex = fs.series_color_overrides.get(name)
+            if not color_hex:
+                color_hex = str(df[df["series"] == name]
+                                ["series_color"].iloc[0])
+            de = int(fs.series_delta_e.get(name, DEFAULT_DELTA_E))
+            specs.append((str(name), color_hex, de))
+        return specs
+
+    def _get_masked_image_uri(fid: str, mask_specs: list[tuple[str, str, int]]
+                               ) -> str:
+        """Return a cached data URI for the ΔE-masked composite.
+
+        ``mask_specs`` is a list of (series_name, color_hex, delta_e). The cache
+        key is fid + a frozenset of (color_hex.lower(), delta_e) — series order
+        and name do not change pixel output. Falls back to the unmasked URI
+        when ``mask_specs`` is empty.
+        """
+        if not mask_specs:
+            return _get_image_uri(fid)
+        sig_inner = frozenset((c.lower(), int(d)) for _, c, d in mask_specs)
+        key = (fid, sig_inner)
+        cached = masked_image_uri_cache.get(key)
+        if cached is not None:
+            return cached
+        fs = pv.state.files.get(fid)
+        if fs is None or fs.image_bgr is None:
+            return _get_image_uri(fid)
+        t0 = time.perf_counter()
+        masked_rgb = build_masked_overlay_image(
+            fs.image_bgr,
+            [(c, d) for _, c, d in mask_specs],
+        )
+        uri = encode_image_data_uri(masked_rgb)
+        _trace("encode_masked_image", file_id=fid,
+               n=len(mask_specs),
+               ms=int((time.perf_counter() - t0) * 1000),
+               bytes=len(uri))
+        masked_image_uri_cache[key] = uri
         return uri
 
     # ------------------------------------------------------------------
@@ -710,6 +827,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             ui.notification_show(f"CSV load failed: {e}", type="error")
             return
         selected_overlay_rv.set(None)
+        with reactive.isolate():
+            _cur_csv = csv_revision()
+        csv_revision.set(_cur_csv + 1)
         _bump_overlay()
 
     # ------------------------------------------------------------------
@@ -735,6 +855,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
     @render.ui
     def session_status():
+        # Subscribe to cal_revision + overlay_revision so the status text
+        # refreshes after detection, manual calibration, and CSV upload.
+        _ = cal_revision()
+        _ = overlay_revision()
         fid = file_id_rv()
         if fid is None:
             return ui.tags.em("No image loaded.")
@@ -1825,6 +1949,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         edited_ids = {p.point_id for p in fs.overlay.points() if p.edited}
         df = fs.overlay.to_dataframe()
         visibility: dict[str, bool] = {}
+        mask_active: dict[str, bool] = {}
         for name in df["series"].drop_duplicates().tolist():
             try:
                 visibility[name] = bool(input[_vis_id(name)]())
@@ -1832,13 +1957,20 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 _trace("overlay_plot.visibility_read_error",
                        series=name, error=repr(exc))
                 visibility[name] = True
+            try:
+                mask_active[name] = bool(input[_mask_id(name)]())
+            except Exception:
+                mask_active[name] = False
         traces = build_overlay_traces(df, series_visibility=visibility,
                                        series_colors=fs.series_color_overrides)
+
+        mask_specs = _compute_mask_specs(fs, df, mask_active)
+
         t0 = time.perf_counter()
         fig = build_data_overlay_figure(
             fs.image_rgb, traces, cal,
             edit_point_ids=edited_ids,
-            image_data_uri=_get_image_uri(fid),
+            image_data_uri=_get_masked_image_uri(fid, mask_specs),
         )
         _trace("overlay_plot.build", ms=int((time.perf_counter() - t0) * 1000))
         return go.FigureWidget(fig)
@@ -1872,9 +2004,21 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return _empty
+        # Match the main overlay's masked image so the zoom inset shows the
+        # same composite the user is comparing against.
+        bubble_uri = _get_image_uri(fid)
+        if fs.csv_df is not None:
+            mask_active: dict[str, bool] = {}
+            for name in fs.csv_df["series"].drop_duplicates().tolist():
+                try:
+                    mask_active[name] = bool(input[_mask_id(name)]())
+                except Exception:
+                    mask_active[name] = False
+            mask_specs = _compute_mask_specs(fs, fs.csv_df, mask_active)
+            bubble_uri = _get_masked_image_uri(fid, mask_specs)
         fig = build_zoom_bubble_figure(
             fs.image_rgb, cal, pt, part,
-            image_data_uri=_get_image_uri(fid),
+            image_data_uri=bubble_uri,
         )
         widget = go.FigureWidget(fig)
         try:
@@ -1888,14 +2032,181 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
     @render.ui
     def series_visibility_panel():
+        # csv_revision bumps on CSV upload; overlay_revision covers other
+        # state changes. Subscribing to both ensures the panel re-renders as
+        # soon as a CSV is attached.
+        _ = csv_revision()
+        _ = overlay_revision()
         fid = file_id_rv()
         fs = pv.state.files.get(fid) if fid is not None else None
         if fs is None or fs.csv_df is None:
             return ui.tags.em("Load a CSV to toggle series visibility.")
-        items = []
+        header = ui.div(
+            ui.div("", style="flex:1 1 auto;"),
+            ui.div("Overlay", style="width:60px;text-align:center;font-size:11px;color:#555;"),
+            ui.div("Mask", style="width:50px;text-align:center;font-size:11px;color:#555;"),
+            ui.div("ΔE", style="width:140px;text-align:center;font-size:11px;color:#555;"),
+            style=("display:flex;align-items:center;gap:6px;"
+                   "padding:2px 0;border-bottom:1px solid #ddd;"),
+        )
+        items = [header]
         for name in fs.csv_df["series"].drop_duplicates().tolist():
-            items.append(ui.input_checkbox(_vis_id(name), str(name), value=True))
+            de_val = fs.series_delta_e.get(name, DEFAULT_DELTA_E)
+            row = ui.div(
+                ui.div(str(name),
+                       style=("flex:1 1 auto;min-width:0;overflow:hidden;"
+                              "text-overflow:ellipsis;white-space:nowrap;"
+                              "font-size:13px;")),
+                ui.div(
+                    ui.input_checkbox(_vis_id(name), None, value=True),
+                    style="width:60px;display:flex;justify-content:center;",
+                ),
+                ui.div(
+                    ui.input_checkbox(_mask_id(name), None, value=False),
+                    style="width:50px;display:flex;justify-content:center;",
+                ),
+                ui.div(
+                    ui.input_slider(_delta_e_id(name), None,
+                                     min=1, max=40, value=int(de_val),
+                                     step=1, width="130px"),
+                    style="width:140px;",
+                ),
+                style=("display:flex;align-items:center;gap:6px;"
+                       "padding:2px 0;border-bottom:1px solid #eee;"),
+            )
+            items.append(row)
         return ui.div(*items)
+
+    @reactive.calc
+    def _active_series_info():
+        """Series-level info for the active file, recomputed when CSV changes.
+
+        Returns ``None`` when no CSV is loaded; otherwise a list of dicts:
+        ``{"name": str, "color": "#hex"}``.
+        """
+        _ = csv_revision()
+        _ = overlay_revision()
+        fid = file_id_rv()
+        if fid is None:
+            return None
+        fs = pv.state.files.get(fid)
+        if fs is None or fs.csv_df is None:
+            return None
+        df = fs.csv_df
+        out = []
+        for name in df["series"].drop_duplicates().tolist():
+            color = fs.series_color_overrides.get(name) or str(
+                df[df["series"] == name]["series_color"].iloc[0]
+            )
+            out.append({"name": str(name), "color": color})
+        return out
+
+    @render.ui
+    def series_color_panel():
+        """Per-series color picker (Calibration tab).
+
+        Native HTML color input is wired to Shiny via the pv-color-picker JS
+        binding in _ANCHOR_KEY_SCRIPT. The ΔE slider and mask toggle live on
+        the Overlay tab next to the visibility checkboxes.
+        """
+        info = _active_series_info()
+        if info is None:
+            return ui.tags.em("Load a CSV to pick colors.")
+        fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
+            return ui.tags.em("Load a CSV to pick colors.")
+
+        rows = []
+        for item in info:
+            name = item["name"]
+            initial = item["color"]
+            picker = ui.HTML(
+                f'<input type="color" class="pv-color-picker" '
+                f'data-input-id="{_color_id(name)}" '
+                f'value="{initial}" '
+                f'style="width:28px;height:28px;border:1px solid #aaa;'
+                f'padding:0;background:none;cursor:pointer;vertical-align:middle;">'
+            )
+            label = ui.tags.span(
+                name,
+                style=("flex:1 1 auto;min-width:0;overflow:hidden;"
+                       "text-overflow:ellipsis;white-space:nowrap;"
+                       "padding:0 8px;font-size:13px;"),
+            )
+            rows.append(ui.div(
+                picker, label,
+                style=("display:flex;align-items:center;gap:6px;"
+                       "padding:4px 0;border-bottom:1px solid #eee;"),
+            ))
+        if not fs.csv_has_series_color and not fs.series_color_overrides:
+            rows.insert(0, ui.tags.small(
+                "Pick a color for a series to enable its mask toggle on the "
+                "Overlay tab.",
+                style="color:#888;display:block;margin-bottom:6px;",
+            ))
+        return ui.div(*rows)
+
+    @reactive.effect
+    def _sync_series_color_overrides():
+        """Mirror per-series color picker values into PerFileState.
+
+        Subscribes to csv_revision so the effect re-runs *after* the panel
+        mounts and the dynamic color inputs exist — that's when we capture
+        the per-input reactive dependencies that fire on subsequent picks.
+        """
+        _ = csv_revision()
+        fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.csv_df is None:
+            return
+        changed = False
+        for name in fs.csv_df["series"].drop_duplicates().tolist():
+            try:
+                val = input[_color_id(name)]()
+            except Exception:
+                continue
+            if not isinstance(val, str) or not val.startswith("#"):
+                continue
+            # Treat the picker value as an "intentional" choice only when it
+            # differs from the auto-palette default. Otherwise we'd flip every
+            # series into masking just by mounting the panel.
+            csv_default = str(fs.csv_df[fs.csv_df["series"] == name]
+                              ["series_color"].iloc[0])
+            if val.lower() == csv_default.lower() and not fs.csv_has_series_color:
+                # User has not actually picked — drop any prior override.
+                if fs.series_color_overrides.pop(name, None) is not None:
+                    changed = True
+                continue
+            if fs.series_color_overrides.get(name) != val:
+                fs.series_color_overrides[name] = val
+                changed = True
+        if changed:
+            with reactive.isolate():
+                _cur = overlay_revision()
+            overlay_revision.set(_cur + 1)
+
+    @reactive.effect
+    def _sync_series_delta_e():
+        """Mirror ΔE sliders into PerFileState. See sibling effect for csv_revision rationale."""
+        _ = csv_revision()
+        fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.csv_df is None:
+            return
+        changed = False
+        for name in fs.csv_df["series"].drop_duplicates().tolist():
+            try:
+                val = int(input[_delta_e_id(name)]())
+            except Exception:
+                continue
+            if fs.series_delta_e.get(name) != val:
+                fs.series_delta_e[name] = val
+                changed = True
+        if changed:
+            with reactive.isolate():
+                _cur = overlay_revision()
+            overlay_revision.set(_cur + 1)
 
     @render.ui
     def overlay_selection_status():

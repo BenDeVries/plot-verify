@@ -55,3 +55,38 @@ def test_has_series_color_column_flag():
     assert rep.has_series_color_column is False
     df, rep = load_csv("series,x,y,series_color\nA,1,2,#ff0000\n")
     assert rep.has_series_color_column is True
+
+
+def test_missing_color_column_fills_palette():
+    """When the CSV omits series_color, each unique series gets a palette hex.
+
+    Regression: previously the column was filled with pd.NA, which stringified
+    to "<NA>" downstream and broke Plotly's color validation in error_y.
+    """
+    from plotverify_core import is_valid_hex
+    csv = "series,x,y\nA,1,2\nA,2,3\nB,1,5\nB,2,6\nC,1,7\n"
+    df, rep = load_csv(csv)
+    assert rep.has_series_color_column is False
+    # Every cell must be a valid hex string — no pd.NA, no "<NA>".
+    assert df["series_color"].apply(is_valid_hex).all()
+    # Distinct series get distinct colors.
+    by_series = df.drop_duplicates("series").set_index("series")["series_color"]
+    assert by_series["A"] != by_series["B"]
+    assert by_series["A"] != by_series["C"]
+    assert by_series["B"] != by_series["C"]
+
+
+def test_editable_overlay_handles_na_color_safely():
+    """Belt-and-braces: even a DataFrame with pd.NA colors must not produce
+    the literal string "<NA>" in OverlayPoint.color_hex."""
+    from plotverify_core import EditableOverlay, is_valid_hex
+    df = pd.DataFrame({
+        "series": ["A", "A"],
+        "x": [1.0, 2.0],
+        "y": [10.0, 20.0],
+        "series_color": [pd.NA, pd.NA],
+    })
+    overlay = EditableOverlay(df)
+    for p in overlay.points():
+        assert isinstance(p.color_hex, str)
+        assert is_valid_hex(p.color_hex)

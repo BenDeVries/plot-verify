@@ -12,7 +12,7 @@ from typing import List, Optional, Tuple
 
 import pandas as pd
 
-from .colors import FALLBACK_HEX, is_valid_hex
+from .colors import FALLBACK_HEX, assign_palette_colors, is_valid_hex
 
 
 REQUIRED_COLUMNS = ["series", "x", "y"]
@@ -60,7 +60,11 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
     has_series_color = "series_color" in df.columns
     report.has_series_color_column = has_series_color
     if not has_series_color:
-        df["series_color"] = pd.NA
+        # Assign cycling palette colors per unique series so downstream renderers
+        # never see pd.NA. `has_series_color_column` stays False so the UI knows
+        # the user did not pick these — masking gates on intentional colors only.
+        palette = dict(assign_palette_colors(df["series"].astype(str).tolist()))
+        df["series_color"] = df["series"].astype(str).map(palette)
 
     for col in OPTIONAL_ERROR_COLUMNS:
         if col not in df.columns:

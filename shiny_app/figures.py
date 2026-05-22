@@ -33,6 +33,7 @@ from plotverify_core import (
     data_to_px,
     px_to_data,
 )
+from plotverify_core.colors import FALLBACK_HEX, is_valid_hex
 
 
 def encode_image_data_uri(img_rgb: np.ndarray) -> str:
@@ -650,7 +651,8 @@ def build_zoom_bubble_figure(
              if pt.y_err_upper is not None and np.isfinite(pt.y_err_upper) else None)
     lower = (float(pt.y_err_lower)
              if pt.y_err_lower is not None and np.isfinite(pt.y_err_lower) else None)
-    color = str(getattr(pt, "color_hex", "#888888"))
+    _raw_color = getattr(pt, "color_hex", FALLBACK_HEX)
+    color = _raw_color if is_valid_hex(_raw_color) else FALLBACK_HEX
 
     if part == "upper" and upper is not None:
         focus_x, focus_y = x_c, upper

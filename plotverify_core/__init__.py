@@ -10,7 +10,10 @@ elsewhere and consumes this package.
 """
 from .app import PlotVerifyApp
 from .colors import (
+    DEFAULT_PALETTE,
     FALLBACK_HEX,
+    assign_palette_colors,
+    detect_background_color,
     hex_complement,
     hex_to_bgr,
     hex_to_hsv_opencv,
@@ -40,6 +43,7 @@ from .image_io import (
 )
 from .masking import apply_color_mask, delta_e_mask
 from .matching import FileEntry, MatchResult, make_file_entry, match_files
+from .overlay_image import build_masked_overlay_image
 from .overlay_model import EditableOverlay, OverlayPoint
 from .overlay_traces import OverlayTrace, build_overlay_traces
 from .serialization import SCHEMA_VERSION, load_session, save_session
@@ -54,6 +58,7 @@ from .session import (
 )
 
 __all__ = [
+    "DEFAULT_PALETTE",
     "FALLBACK_HEX",
     "Anchors",
     "AppState",
@@ -78,12 +83,15 @@ __all__ = [
     "SCHEMA_VERSION",
     "SeriesState",
     "apply_color_mask",
+    "assign_palette_colors",
+    "build_masked_overlay_image",
     "build_overlay_traces",
     "compute_calibration",
     "data_to_px",
     "decode_and_maybe_downscale",
     "decode_image_bytes",
     "delta_e_mask",
+    "detect_background_color",
     "hash_bytes",
     "hex_complement",
     "hex_to_bgr",
