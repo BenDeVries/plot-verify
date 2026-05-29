@@ -27,9 +27,10 @@ class TestLog10OrNone:
         assert _log10_or_none(0.0, 10.0) is None
         assert _log10_or_none(-1.0, 10.0) is None
 
-    def test_log_base_other_passes_through(self):
-        # Only log10 is supported.
-        assert _log10_or_none(5.0, 2.0) == 5.0
+    def test_log_base_other_supported(self):
+        # Arbitrary bases are now supported.
+        assert _log10_or_none(8.0, 2.0) == pytest.approx(3.0)
+        assert _log10_or_none(math.e, math.e) == pytest.approx(1.0)
 
 
 class TestComputeCalibrationLinear:

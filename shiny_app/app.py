@@ -4,7 +4,7 @@ Layout:
 
 - Upload card (image + CSV) and an EasyOCR-availability banner at the top.
 - ``Calibrate`` tab:
-    * Main image with three draggable P1/P2/P3 anchor circles.
+    * Main image with two draggable P1/P2 anchor circles.
     * Right column with three collapsible accordions: X/Y label bands,
       Calibration points, Manual Values.
     * Bottom accordion: detection settings + frame-detection warnings.
@@ -20,6 +20,7 @@ and reactive wiring.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from pathlib import Path
@@ -132,6 +133,27 @@ from .figures import (
 # ---------------------------------------------------------------------------
 
 
+def _log_base_to_str(b: object) -> str:
+    if b is None:
+        return "10"
+    if abs(float(b) - math.e) < 1e-10:
+        return "e"
+    return str(b)
+
+
+def _parse_log_base(checked: object, base_str: object) -> object:
+    if not checked:
+        return None
+    s = (base_str or "10").strip().lower()
+    if s == "e":
+        return math.e
+    try:
+        v = float(s)
+        return v if v > 1.0 else None
+    except ValueError:
+        return None
+
+
 def _anchor_inputs(prefix: str, label_x: str, label_y: str,
                    include_data_x: bool, include_data_y: bool,
                    *, px_x: float, px_y: float,
@@ -170,7 +192,7 @@ def _calibration_tab() -> ui.Tag:
                 ui.card_header(
                     ui.div(
                         ui.div(
-                            "Calibration image — drag P1/P2/P3 onto the correct tick positions "
+                            "Calibration image — drag P1/P2 onto the correct tick positions "
                             "(click an anchor, then arrow keys for ±1px; Shift = 10px)",
                             style="flex: 1 1 auto; min-width: 0;",
                         ),
@@ -631,7 +653,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     overlay_revision = reactive.value(0)      # bump after EditableOverlay edits
     csv_revision = reactive.value(0)          # bump after CSV add/replace
     show_diagnostic = reactive.value(False)   # diagnostic-overlay toggle (placeholder)
-    selected_anchor = reactive.value(None)    # "P1"/"P2"/"P3"/None — keyboard target
+    selected_anchor = reactive.value(None)    # "P1"/"P2"/None — keyboard target
     axis_frame_rv = reactive.value(None)      # AxisFrame from detect_frame / auto-cal
     selected_overlay_rv = reactive.value(None)  # {pid, part} for overlay point selection
 
@@ -1018,10 +1040,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 # 2=P1-P3 vertical, 3=P2 vertical. Update only the changing
                 # coordinate per trace.
                 if len(widget.data) >= 4:
-                    widget.data[0].y = [a.p1_pixel[1], a.p1_pixel[1]]
-                    widget.data[1].y = [a.p3_pixel[1], a.p3_pixel[1]]
-                    widget.data[2].x = [a.p1_pixel[0], a.p1_pixel[0]]
-                    widget.data[3].x = [a.p2_pixel[0], a.p2_pixel[0]]
+                    widget.data[0].y = [a.p2_pixel[1], a.p2_pixel[1]]  # baseline y
+                    widget.data[1].y = [a.p3_pixel[1], a.p3_pixel[1]]  # top y
+                    widget.data[2].x = [a.p3_pixel[0], a.p3_pixel[0]]  # left-edge x
+                    widget.data[3].x = [a.p2_pixel[0], a.p2_pixel[0]]  # right-edge x
         finally:
             syncing["inputs_to_shapes"] = False
 
@@ -1155,16 +1177,14 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # enforce_anchor_constraints to misidentify which anchor led and snap
         # the position back. Flag is cleared once all pixel inputs have settled.
         syncing["shapes_to_inputs"] = True
-        ui.update_numeric("p1_px_x", value=round(a.p1_pixel[0], 2))
-        ui.update_numeric("p1_px_y", value=round(a.p1_pixel[1], 2))
-        ui.update_numeric("p2_px_x", value=round(a.p2_pixel[0], 2))
-        ui.update_numeric("p2_px_y", value=round(a.p2_pixel[1], 2))
         ui.update_numeric("p3_px_x", value=round(a.p3_pixel[0], 2))
         ui.update_numeric("p3_px_y", value=round(a.p3_pixel[1], 2))
+        ui.update_numeric("p2_px_x", value=round(a.p2_pixel[0], 2))
+        ui.update_numeric("p2_px_y", value=round(a.p2_pixel[1], 2))
         ui.update_numeric("p1_data_x", value=a.p1_data_x)
+        ui.update_numeric("p3_data_y", value=a.p3_data_y)
         ui.update_numeric("p2_data_x", value=a.p2_data_x)
         ui.update_numeric("p1_data_y", value=a.p1_data_y)
-        ui.update_numeric("p3_data_y", value=a.p3_data_y)
 
     @reactive.effect
     @reactive.event(input.apply_manual)
@@ -1183,16 +1203,18 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         def _num(v, fallback):
             return float(v) if v is not None else float(fallback)
 
+        p3_px = (float(input.p3_px_x() or 0), float(input.p3_px_y() or 0))
+        p2_px = (float(input.p2_px_x() or 0), float(input.p2_px_y() or 0))
         anchors = Anchors(
-            p1_pixel=(float(input.p1_px_x() or 0), float(input.p1_px_y() or 0)),
-            p2_pixel=(float(input.p2_px_x() or 0), float(input.p2_px_y() or 0)),
-            p3_pixel=(float(input.p3_px_x() or 0), float(input.p3_px_y() or 0)),
+            p1_pixel=(p3_px[0], p2_px[1]),  # derived bottom-left corner
+            p2_pixel=p2_px,
+            p3_pixel=p3_px,
             p1_data_x=_num(input.p1_data_x(), cur.p1_data_x),
             p2_data_x=_num(input.p2_data_x(), cur.p2_data_x),
             p1_data_y=_num(input.p1_data_y(), cur.p1_data_y),
             p3_data_y=_num(input.p3_data_y(), cur.p3_data_y),
-            x_log_base=(10.0 if input.x_log_base() else None),
-            y_log_base=(10.0 if input.y_log_base() else None),
+            x_log_base=_parse_log_base(input.x_log(), input.x_log_base_val()),
+            y_log_base=_parse_log_base(input.y_log(), input.y_log_base_val()),
         )
         anchors_rv.set(anchors)
         try:
@@ -1292,7 +1314,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         _bump_cal()
 
     # ------------------------------------------------------------------
-    # Keyboard nudging of P1/P2/P3 and overlay points
+    # Keyboard nudging of P1/P2 and overlay points
     # ------------------------------------------------------------------
 
     def _apply_symmetry(x, y, upper, lower, mode):
@@ -1670,15 +1692,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             dx = step
         else:
             return
-        pts = {
-            "P1": current.p1_pixel,
-            "P2": current.p2_pixel,
-            "P3": current.p3_pixel,
-        }
-        px, py = pts[sel]
-        pts[sel] = (px + dx, py + dy)
+        # Display "P1" maps to internal p3_pixel; "P2" maps to internal p2_pixel.
+        display_to_internal = {"P1": "p3", "P2": "p2"}
+        internal_key = display_to_internal.get(sel)
+        if internal_key is None:
+            return
+        pts = {"p1": current.p1_pixel, "p2": current.p2_pixel, "p3": current.p3_pixel}
+        px, py = pts[internal_key]
+        pts[internal_key] = (px + dx, py + dy)
         raw = Anchors(
-            p1_pixel=pts["P1"], p2_pixel=pts["P2"], p3_pixel=pts["P3"],
+            p1_pixel=pts["p1"], p2_pixel=pts["p2"], p3_pixel=pts["p3"],
             p1_data_x=current.p1_data_x, p2_data_x=current.p2_data_x,
             p1_data_y=current.p1_data_y, p3_data_y=current.p3_data_y,
             x_log_base=current.x_log_base, y_log_base=current.y_log_base,
@@ -1784,23 +1807,55 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # every drag — values then flow via ui.update_numeric instead.
         with reactive.isolate():
             a = anchors_rv()
+        # Displayed P1 = top-left (internal p3); displayed P2 = bottom-right (internal p2).
+        # Internal p1 (bottom-left) is derived as (p3.x, p2.y) and never shown.
         return ui.TagList(
-            _anchor_inputs("p1", "P1 data X", "P1 data Y",
-                           include_data_x=True, include_data_y=True,
-                           px_x=a.p1_pixel[0], px_y=a.p1_pixel[1],
-                           data_x=a.p1_data_x, data_y=a.p1_data_y),
-            _anchor_inputs("p2", "P2 data X", "(n/a)",
-                           include_data_x=True, include_data_y=False,
-                           px_x=a.p2_pixel[0], px_y=a.p2_pixel[1],
-                           data_x=a.p2_data_x, data_y=0.0),
-            _anchor_inputs("p3", "(n/a)", "P3 data Y",
-                           include_data_x=False, include_data_y=True,
-                           px_x=a.p3_pixel[0], px_y=a.p3_pixel[1],
-                           data_x=0.0, data_y=a.p3_data_y),
+            ui.tags.strong("P1"),
+            ui.row(
+                ui.column(6, ui.input_numeric("p3_px_x", "pixel x",
+                                              value=round(float(a.p3_pixel[0]), 2), step=1)),
+                ui.column(6, ui.input_numeric("p3_px_y", "pixel y",
+                                              value=round(float(a.p3_pixel[1]), 2), step=1)),
+            ),
+            ui.row(
+                ui.column(6, ui.input_numeric("p1_data_x", "data X",
+                                              value=float(a.p1_data_x))),
+                ui.column(6, ui.input_numeric("p3_data_y", "data Y",
+                                              value=float(a.p3_data_y))),
+            ),
+            ui.tags.strong("P2"),
+            ui.row(
+                ui.column(6, ui.input_numeric("p2_px_x", "pixel x",
+                                              value=round(float(a.p2_pixel[0]), 2), step=1)),
+                ui.column(6, ui.input_numeric("p2_px_y", "pixel y",
+                                              value=round(float(a.p2_pixel[1]), 2), step=1)),
+            ),
+            ui.row(
+                ui.column(6, ui.input_numeric("p2_data_x", "data X",
+                                              value=float(a.p2_data_x))),
+                ui.column(6, ui.input_numeric("p1_data_y", "data Y",
+                                              value=float(a.p1_data_y))),
+            ),
             ui.hr(),
             ui.row(
-                ui.column(6, ui.input_checkbox("x_log_base", "X is log10")),
-                ui.column(6, ui.input_checkbox("y_log_base", "Y is log10")),
+                ui.column(6,
+                    ui.input_checkbox("x_log", "X is log",
+                                      value=(a.x_log_base is not None)),
+                    ui.panel_conditional(
+                        "input.x_log",
+                        ui.input_text("x_log_base_val", "Base",
+                                      value=_log_base_to_str(a.x_log_base)),
+                    ),
+                ),
+                ui.column(6,
+                    ui.input_checkbox("y_log", "Y is log",
+                                      value=(a.y_log_base is not None)),
+                    ui.panel_conditional(
+                        "input.y_log",
+                        ui.input_text("y_log_base_val", "Base",
+                                      value=_log_base_to_str(a.y_log_base)),
+                    ),
+                ),
             ),
             ui.input_action_button("apply_manual", "Apply manual calibration",
                                     class_="btn-primary"),
@@ -1813,8 +1868,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
     # Numeric input → anchor (live mirror). We avoid an effect-storm by guarding
     # against the reverse path with `syncing`. Inputs are rendered conditionally
-    # via `@render.ui`, so before the manual-values panel mounts, reading
-    # `input.p1_px_x()` raises SilentException — fall through to a no-op.
+    # via `@render.ui`, so before the manual-values panel mounts the reads
+    # raise SilentException — fall through to a no-op.
     @reactive.effect
     def _inputs_to_anchors():
         if syncing["shapes_to_inputs"]:
@@ -1825,17 +1880,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             try:
                 with reactive.isolate():
                     a = anchors_rv()
-                p1x = input.p1_px_x()
-                p1y = input.p1_px_y()
                 p2x = input.p2_px_x()
                 p2y = input.p2_px_y()
                 p3x = input.p3_px_x()
                 p3y = input.p3_px_y()
-                if (p1x is not None and p1y is not None
-                        and p2x is not None and p2y is not None
+                if (p2x is not None and p2y is not None
                         and p3x is not None and p3y is not None
-                        and round(float(p1x), 2) == round(a.p1_pixel[0], 2)
-                        and round(float(p1y), 2) == round(a.p1_pixel[1], 2)
                         and round(float(p2x), 2) == round(a.p2_pixel[0], 2)
                         and round(float(p2y), 2) == round(a.p2_pixel[1], 2)
                         and round(float(p3x), 2) == round(a.p3_pixel[0], 2)
@@ -1847,17 +1897,17 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             return
         try:
             vals = (
-                input.p1_px_x(), input.p1_px_y(),
-                input.p2_px_x(), input.p2_px_y(),
-                input.p3_px_x(), input.p3_px_y(),
-                input.p1_data_x(), input.p2_data_x(),
-                input.p1_data_y(), input.p3_data_y(),
-                input.x_log_base(), input.y_log_base(),
+                input.p3_px_x(), input.p3_px_y(),  # displayed P1 pixel (internal p3)
+                input.p2_px_x(), input.p2_px_y(),  # displayed P2 pixel (internal p2)
+                input.p1_data_x(), input.p3_data_y(),  # displayed P1 data
+                input.p2_data_x(), input.p1_data_y(),  # displayed P2 data
+                input.x_log(), input.x_log_base_val(),
+                input.y_log(), input.y_log_base_val(),
             )
         except Exception as exc:
             _trace("inputs_to_anchors.read_error", error=repr(exc))
             return
-        if any(v is None for v in vals[:6]):
+        if any(v is None for v in vals[:4]):
             return
         # Read prev non-reactively — this effect should only depend on inputs.
         # Done here (before raw) so we can use prev data values as fallback
@@ -1866,16 +1916,18 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # defaults such as 1.0.
         with reactive.isolate():
             prev = anchors_rv()
+        p3_px = (float(vals[0]), float(vals[1]))
+        p2_px = (float(vals[2]), float(vals[3]))
         raw = Anchors(
-            p1_pixel=(float(vals[0]), float(vals[1])),
-            p2_pixel=(float(vals[2]), float(vals[3])),
-            p3_pixel=(float(vals[4]), float(vals[5])),
-            p1_data_x=float(vals[6]) if vals[6] is not None else prev.p1_data_x,
-            p2_data_x=float(vals[7]) if vals[7] is not None else prev.p2_data_x,
-            p1_data_y=float(vals[8]) if vals[8] is not None else prev.p1_data_y,
-            p3_data_y=float(vals[9]) if vals[9] is not None else prev.p3_data_y,
-            x_log_base=(10.0 if vals[10] else None),
-            y_log_base=(10.0 if vals[11] else None),
+            p1_pixel=(p3_px[0], p2_px[1]),  # derived bottom-left corner
+            p2_pixel=p2_px,
+            p3_pixel=p3_px,
+            p1_data_x=float(vals[4]) if vals[4] is not None else prev.p1_data_x,
+            p3_data_y=float(vals[5]) if vals[5] is not None else prev.p3_data_y,
+            p2_data_x=float(vals[6]) if vals[6] is not None else prev.p2_data_x,
+            p1_data_y=float(vals[7]) if vals[7] is not None else prev.p1_data_y,
+            x_log_base=_parse_log_base(vals[8], vals[9]),
+            y_log_base=_parse_log_base(vals[10], vals[11]),
         )
         # Apply rectangle constraints: a typed P1.x value pulls P3.x along, etc.
         a = enforce_anchor_constraints(raw, prev)

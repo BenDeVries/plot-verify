@@ -115,19 +115,17 @@ def manual_calibration(
 
     # Transform data values to log space if requested.
     def _t(value: float, log_base: Optional[float]) -> Optional[float]:
-        if not log_base or log_base == 1.0:
-            return float(value)
-        if log_base != 10.0:
+        if not log_base or log_base <= 0 or log_base == 1.0:
             return float(value)
         v = float(value)
         if v <= 0:
             return None
-        return float(math.log10(v))
+        return float(math.log(v, log_base))
 
     x_p1_t = _t(p1_data_x, x_log_base)
     x_p2_t = _t(p2_data_x, x_log_base)
     if x_p1_t is None or x_p2_t is None:
-        return _fail("Manual calibration: log10 X-axis requires positive data values.")
+        return _fail("Manual calibration: log X-axis requires positive data values.")
 
     x_scale = (x_p2_t - x_p1_t) / (p2_px_x - p1_px_x)
     x_offset = x_p1_t - x_scale * p1_px_x
@@ -141,7 +139,7 @@ def manual_calibration(
     y_p3_t = _t(p3_data_y, y_log_base)
     y_base_t = _t(p1_data_y, y_log_base)
     if y_p3_t is None or y_base_t is None:
-        return _fail("Manual calibration: log10 Y-axis requires positive data values.")
+        return _fail("Manual calibration: log Y-axis requires positive data values.")
 
     y_scale = (y_p3_t - y_base_t) / (p3_px_y - x_axis_pixel_y)
     y_offset = y_p3_t - y_scale * p3_px_y

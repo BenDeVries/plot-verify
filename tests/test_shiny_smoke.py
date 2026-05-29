@@ -46,10 +46,12 @@ def test_default_anchors_geometry():
 
 
 def test_anchor_shapes_round_trip():
+    # anchor_shapes is a legacy helper (3-circle form); ANCHOR_LABELS now only
+    # has 2 display labels, so compare against the legacy set directly.
     a = Anchors(p1_pixel=(10, 90), p2_pixel=(90, 90), p3_pixel=(10, 10))
     shapes = anchor_shapes(a)
     assert len(shapes) == 3
-    assert {s["name"] for s in shapes} == set(ANCHOR_LABELS)
+    assert {s["name"] for s in shapes} == {"P1", "P2", "P3"}
     a2 = shapes_to_anchors(shapes, a)
     assert a2.p1_pixel == a.p1_pixel
     assert a2.p2_pixel == a.p2_pixel
@@ -64,7 +66,7 @@ def test_calibration_edit_figure_builds():
     # Anchors are now annotations (no resize handles); guide lines are
     # scatter traces; layout.shapes is empty.
     assert len(fig.layout.shapes) == 0
-    assert len(fig.layout.annotations) == 3
+    assert len(fig.layout.annotations) == 2
     assert {a.name for a in fig.layout.annotations} == set(ANCHOR_LABELS)
     assert len(fig.data) == 4
     for trace in fig.data:
@@ -73,12 +75,14 @@ def test_calibration_edit_figure_builds():
 
 
 def test_anchor_annotations_round_trip():
+    # Only P1 (top-left, internal p3) and P2 (bottom-right, internal p2) are shown.
+    # Internal p1 (bottom-left) is derived as (p3.x, p2.y) on round-trip.
     a = Anchors(p1_pixel=(10, 90), p2_pixel=(90, 90), p3_pixel=(10, 10))
     anns = anchor_annotations(a)
-    assert len(anns) == 3
+    assert len(anns) == 2
     assert {ann["name"] for ann in anns} == set(ANCHOR_LABELS)
     a2 = annotations_to_anchors(anns, a)
-    assert a2.p1_pixel == a.p1_pixel
+    assert a2.p1_pixel == a.p1_pixel  # (p3.x, p2.y) = (10, 90) — derived correctly
     assert a2.p2_pixel == a.p2_pixel
     assert a2.p3_pixel == a.p3_pixel
 

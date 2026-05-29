@@ -4,13 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project does
 
-PlotVerify is a Streamlit app for verifying AI-extracted data from scientific plots. It overlays user-supplied data (series, x/y values, confidence intervals, colors) on the source image and calibrates pixel coordinates to data coordinates using a multi-phase OCR + geometry pipeline.
+PlotVerify is a Shiny app for verifying AI-extracted data from scientific plots. It overlays user-supplied data (series, x/y values, confidence intervals, colors) on the source image and calibrates pixel coordinates to data coordinates using a multi-phase OCR + geometry pipeline.
 
 ## Running the app
 
 ```bash
-streamlit run app_auto_axis.py
+shiny run app_shiny.py
 ```
+
+The legacy single-image Streamlit workflow is still available at `app_auto_axis.py` (`streamlit run app_auto_axis.py`), but active development targets the Shiny app.
 
 ## Tests and CI
 
@@ -29,7 +31,49 @@ A local pre-push hook is available at `scripts/git-hooks/pre-push`. Enable it on
 git config core.hooksPath scripts/git-hooks
 ```
 
+## Branch structure
+
+| Branch | Purpose |
+|---|---|
+| `main` | Active development branch |
+| `shiny-manual` | Deployment branch — `main` + GitHub Pages deploy infrastructure |
+
+On every push to `main`, `.github/workflows/sync-to-shiny-manual.yml` automatically merges `main` into `shiny-manual`. That merge triggers `.github/workflows/deploy-shinylive.yml` (which lives only on `shiny-manual`), rebuilding and deploying the shinylive bundle to GitHub Pages.
+
+`shiny-manual` carries deployment-only files not present on `main`:
+- `.github/workflows/deploy-shinylive.yml` — GitHub Pages deploy trigger
+- `shinylive_app/requirements.txt` — Pyodide-compatible deps (no EasyOCR/PyTorch)
+- `scripts/build_shinylive.py` — shinylive bundle builder
+
+If a new package is added to `requirements.txt` on `main`, manually update `shinylive_app/requirements.txt` on `shiny-manual` if the package is Pyodide-compatible, or omit it if it requires native extensions.
+
+**Prerequisite:** A fine-grained PAT with "Contents: write" permission must be stored as repository secret `SYNC_PAT` for the sync workflow to push and trigger downstream workflows.
+
 ## Architecture
+
+Three layers sit on top of the calibration engine:
+
+```
+app_shiny.py
+    └── shiny_app/app.py       — Shiny UI: reactive layout, user interaction
+        shiny_app/figures.py   — Plotly figure builders (calibration edit + data overlay)
+
+plotverify_core/               — UI-agnostic business logic
+    app.py                     — PlotVerifyApp controller, owns AppState
+    session.py                 — AppState, PerFileState, ReviewStatus dataclasses
+    csv_io.py                  — CSV loading, validation, audit reports
+    image_io.py                — Image decode + downscaling
+    matching.py                — Image/CSV pairing by canonical stem
+    overlay_model.py           — EditableOverlay: per-point edits, preserves originals
+    overlay_traces.py          — build_overlay_traces(): UI-agnostic trace records
+    overlay_image.py           — ΔE mask preview compositing
+    colors.py                  — Hex validation, hex↔HSV/BGR, complementary picker
+    masking.py                 — CIE Lab delta_e_mask, HSV masking primitives
+    series_state.py            — SeriesState: per-series mask config
+    serialization.py           — Session save/load as zip (manifest.json + images + csvs)
+
+axis_pipeline/                 — Core calibration engine (see section below)
+```
 
 ### `axis_pipeline/` — the core calibration engine
 
@@ -69,7 +113,7 @@ Phase C: re-OCR a tight band below the x-axis (numeric allowlist)
 | `pairing.py` | Spatial filter + one-to-one matching of OCR labels to grid-fitted ticks; monotonicity enforcement |
 | `calibration.py` | OLS and Student-t MLE regression (`data = scale * pixel + offset`) |
 | `overlay.py` | Diagnostic overlay drawing |
-| `legacy.py` | Adaptor that re-exposes the old dict-shaped API for the Streamlit app |
+| `legacy.py` | Adaptor that re-exposes the old dict-shaped API for the legacy Streamlit app |
 
 ### Legacy shims
 
@@ -97,5 +141,4 @@ P3 = topmost paired y-tick; its `data_x` is derived from the x-calibration at P3
 
 - `easyocr` — production OCR engine (lazy import in `ocr.py`; not needed if injecting a custom runner)
 - `opencv-python` (cv2), `numpy`, `scipy` — image processing and calibration math
-- `streamlit`, `plotly`, `pandas`, `Pillow` — UI layer
-
+- `shiny`, `shinywidgets`, `plotly`, `pandas`, `Pillow` — UI layer

@@ -7,7 +7,8 @@
       "Bash(python *)",
       "Bash(timeout 8 shiny run app_shiny.py --port 18765 --no-reload)",
       "Bash(timeout 8 shiny run app_shiny.py --port 18765)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(git *)"
     ]
   }
 }
