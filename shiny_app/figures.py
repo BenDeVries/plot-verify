@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 from typing import Iterable, Optional, Union
 
 import numpy as np
@@ -50,7 +51,7 @@ def encode_image_data_uri(img_rgb: np.ndarray) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-ANCHOR_LABELS = ("P1", "P2", "P3")
+ANCHOR_LABELS = ("P1", "P2")
 ANCHOR_COLORS = {"P1": "#e02020", "P2": "#1f9b4c", "P3": "#2060e0"}
 ANCHOR_RADIUS_PX = 9  # half-width of each draggable circle, in image pixels
 GUIDE_LINE_COLOR = "#444"
@@ -138,7 +139,7 @@ def guide_line_traces(anchors: Anchors, width: int, height: int) -> list:
     - 2: P1-P3 vertical (50% opacity)
     - 3: P2 vertical (25% opacity)
     """
-    p1, p2, p3 = anchors.p1_pixel, anchors.p2_pixel, anchors.p3_pixel
+    p2, p3 = anchors.p2_pixel, anchors.p3_pixel
 
     def _line(xs, ys, opacity):
         return go.Scatter(
@@ -150,10 +151,10 @@ def guide_line_traces(anchors: Anchors, width: int, height: int) -> list:
         )
 
     return [
-        _line([0, width], [p1[1], p1[1]], 0.5),     # P1-P2 horizontal
-        _line([0, width], [p3[1], p3[1]], 0.25),    # parallel through P3
-        _line([p1[0], p1[0]], [0, height], 0.5),    # P1-P3 vertical
-        _line([p2[0], p2[0]], [0, height], 0.25),   # parallel through P2
+        _line([0, width], [p2[1], p2[1]], 0.5),     # baseline (P2 y = derived P1 y)
+        _line([0, width], [p3[1], p3[1]], 0.25),    # top (P1 displayed / internal P3)
+        _line([p3[0], p3[0]], [0, height], 0.5),    # left edge (P1 displayed x = internal P3 x)
+        _line([p2[0], p2[0]], [0, height], 0.25),   # right edge (P2 x)
     ]
 
 
@@ -209,9 +210,8 @@ def anchor_annotations(anchors: Anchors, selected: Optional[str] = None) -> list
     visually obvious.
     """
     points = (
-        ("P1", anchors.p1_pixel, ANCHOR_COLORS["P1"]),
-        ("P2", anchors.p2_pixel, ANCHOR_COLORS["P2"]),
-        ("P3", anchors.p3_pixel, ANCHOR_COLORS["P3"]),
+        ("P1", anchors.p3_pixel, ANCHOR_COLORS["P1"]),  # top-left (internal p3)
+        ("P2", anchors.p2_pixel, ANCHOR_COLORS["P2"]),  # bottom-right (internal p2)
     )
     annotations = []
     for name, (px, py), color in points:
@@ -251,10 +251,15 @@ def annotations_to_anchors(annotations: Iterable, existing: Anchors) -> Anchors:
         if x is None or y is None:
             continue
         px_by_name[name] = (float(x), float(y))
+    # Display "P1" is the top-left anchor (internal p3); "P2" is bottom-right (internal p2).
+    # The hidden internal p1 (bottom-left) is always derived as (p3.x, p2.y).
+    new_p3 = px_by_name.get("P1", existing.p3_pixel)
+    new_p2 = px_by_name.get("P2", existing.p2_pixel)
+    derived_p1 = (new_p3[0], new_p2[1])
     return Anchors(
-        p1_pixel=px_by_name.get("P1", existing.p1_pixel),
-        p2_pixel=px_by_name.get("P2", existing.p2_pixel),
-        p3_pixel=px_by_name.get("P3", existing.p3_pixel),
+        p1_pixel=derived_p1,
+        p2_pixel=new_p2,
+        p3_pixel=new_p3,
         p1_data_x=existing.p1_data_x,
         p2_data_x=existing.p2_data_x,
         p1_data_y=existing.p1_data_y,
@@ -429,6 +434,36 @@ def shapes_to_anchors(shapes: Iterable[dict], existing: Anchors) -> Anchors:
 # Data overlay figure (calibrated image + extracted points)
 # ---------------------------------------------------------------------------
 
+def _log_axis_title(axis_label: str, base: float) -> str:
+    """Human-readable axis title that shows the actual log base."""
+    if abs(base - math.e) < 1e-10:
+        return f"{axis_label} (ln)"
+    b_str = str(int(round(base))) if abs(base - round(base)) < 0.001 else f"{base:.4g}"
+    return f"{axis_label} (log{b_str})"
+
+
+def _log_axis_ticks(lo: float, hi: float, base: float):
+    """Tick values/labels at integer powers of *base* that lie within [lo, hi].
+
+    Plotly ``type="log"`` positions tick marks by their data value, so we can
+    pass the actual power-of-base values as ``tickvals`` and supply matching
+    ``ticktext`` strings — no manual log10 conversion needed.
+    """
+    lo_exp = math.floor(math.log(lo, base) - 1e-9)
+    hi_exp = math.ceil(math.log(hi, base) + 1e-9)
+    vals, texts = [], []
+    for exp in range(lo_exp, hi_exp + 1):
+        v = base ** exp
+        if lo <= v <= hi:
+            vals.append(v)
+            if abs(base - math.e) < 1e-10:
+                texts.append("1" if exp == 0 else f"e^{exp}")
+            else:
+                texts.append(str(int(round(v))) if abs(v - round(v)) < 0.001 else f"{v:.4g}")
+    if not vals:
+        return [lo, hi], [f"{lo:.4g}", f"{hi:.4g}"]
+    return vals, texts
+
 
 def build_data_overlay_figure(
     img_rgb: np.ndarray,
@@ -598,16 +633,20 @@ def build_data_overlay_figure(
 
     if x_log:
         x_lo, x_hi = sorted([x_left, x_right])
+        x_tv, x_tt = _log_axis_ticks(x_lo, x_hi, x_log)
         fig.update_xaxes(type="log",
                          range=[float(np.log10(x_lo)), float(np.log10(x_hi))],
-                         title="X (log10)")
+                         title=_log_axis_title("X", x_log),
+                         tickvals=x_tv, ticktext=x_tt)
     else:
         fig.update_xaxes(range=sorted([x_left, x_right]), title="X")
     if y_log:
         y_lo, y_hi = sorted([y_bottom, y_top])
+        y_tv, y_tt = _log_axis_ticks(y_lo, y_hi, y_log)
         fig.update_yaxes(type="log",
                          range=[float(np.log10(y_lo)), float(np.log10(y_hi))],
-                         title="Y (log10)")
+                         title=_log_axis_title("Y", y_log),
+                         tickvals=y_tv, ticktext=y_tt)
     else:
         fig.update_yaxes(range=sorted([y_bottom, y_top]), title="Y")
     fig.update_layout(
@@ -777,12 +816,18 @@ def build_zoom_bubble_figure(
         range=[x_lo_p, x_hi_p],
         showgrid=True, gridcolor="rgba(0,0,0,0.12)",
         tickfont=dict(size=9), showticklabels=True,
+        **(dict(zip(("tickvals", "ticktext"),
+                    _log_axis_ticks(10**x_lo_p, 10**x_hi_p, x_log)))
+           if x_log else {}),
     )
     y_axis = dict(
         type="log" if y_log else "linear",
         range=[y_lo_p, y_hi_p],
         showgrid=True, gridcolor="rgba(0,0,0,0.12)",
         tickfont=dict(size=9), showticklabels=True,
+        **(dict(zip(("tickvals", "ticktext"),
+                    _log_axis_ticks(10**y_lo_p, 10**y_hi_p, y_log)))
+           if y_log else {}),
     )
     fig.update_layout(
         xaxis=x_axis, yaxis=y_axis,

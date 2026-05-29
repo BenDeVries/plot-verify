@@ -11,6 +11,7 @@ New code should prefer the typed `CalibrationResult` API directly.
 """
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -20,20 +21,18 @@ P1P2_Y_TOLERANCE_PX = 3.0
 
 
 def log10_or_none(value, log_base):
-    """Return log10(value) when log_base==10 and value>0, else value as float.
+    """Return log_base(value) when log_base is set and value>0, else value as float.
 
     Returns None when the requested log transform would be invalid (non-positive
     value), so callers can fail fast rather than producing NaN downstream.
+    Supports any positive base > 1 (including math.e for natural log).
     """
     if log_base in (None, 0, 1.0):
-        return float(value)
-    if log_base != 10.0:
-        # Only log10 is supported; treat anything else as linear.
         return float(value)
     v = float(value)
     if v <= 0:
         return None
-    return float(np.log10(v))
+    return float(math.log(v, log_base))
 
 
 # Module-private alias retained for backwards compatibility with existing
@@ -119,13 +118,13 @@ def data_to_px(data_x, data_y, cal):
     if x_log:
         if data_x is None or float(data_x) <= 0:
             return (float("nan"), float("nan"))
-        x_t = float(np.log10(float(data_x)))
+        x_t = math.log(float(data_x), x_log)
     else:
         x_t = float(data_x)
     if y_log:
         if data_y is None or float(data_y) <= 0:
             return (float("nan"), float("nan"))
-        y_t = float(np.log10(float(data_y)))
+        y_t = math.log(float(data_y), y_log)
     else:
         y_t = float(data_y)
     return ((x_t - cal["x_offset"]) / cal["x_scale"],
