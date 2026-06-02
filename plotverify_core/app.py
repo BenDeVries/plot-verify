@@ -96,6 +96,7 @@ class PlotVerifyApp:
         fs.csv_filename = csv_filename
         fs.csv_df = df
         fs.csv_has_series_color = report.has_series_color_column
+        fs.csv_error_bar_type = report.error_bar_type
         fs.overlay = EditableOverlay(df)
         fs.series_states = init_series_states(df)
         self.mark_dirty()

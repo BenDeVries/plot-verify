@@ -110,6 +110,11 @@ from plotverify_core import (
     build_overlay_traces,
     px_to_data,
 )
+from plotverify_core.dashboard import (
+    VALID_ERROR_TYPES,
+    compute_scatter_stats,
+    compute_time_series_stats,
+)
 
 from .figures import (
     ANCHOR_LABELS,
@@ -233,6 +238,18 @@ def _calibration_tab() -> ui.Tag:
                         ui.output_ui("series_color_panel"),
                         value="series_colors",
                     ),
+                    ui.accordion_panel(
+                        "Plot type",
+                        ui.input_select(
+                            "plot_type_select",
+                            None,
+                            {
+                                "time_series": "Time series w/ intervals",
+                                "scatter": "Scatter plots",
+                            },
+                        ),
+                        value="plot_type",
+                    ),
                     id="right_accordion",
                     open=["bands", "manual_values", "series_colors"],
                     multiple=True,
@@ -287,6 +304,7 @@ def _overlay_tab() -> ui.Tag:
             ),
             col_widths=(8, 4),
         ),
+        ui.output_ui("dashboard_panel"),
         # Floating zoom bubble — position:fixed so it hovers over the page
         # regardless of scroll position. Visibility is toggled via the
         # pv_bubble_show custom message handler in _ANCHOR_KEY_SCRIPT.
@@ -852,6 +870,20 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         with reactive.isolate():
             _cur_csv = csv_revision()
         csv_revision.set(_cur_csv + 1)
+        _bump_overlay()
+
+    # ------------------------------------------------------------------
+    # Plot type
+    # ------------------------------------------------------------------
+
+    @reactive.effect
+    @reactive.event(input.plot_type_select)
+    def _on_plot_type_change():
+        with reactive.isolate():
+            fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid else None
+        if fs:
+            fs.plot_type = input.plot_type_select()
         _bump_overlay()
 
     # ------------------------------------------------------------------
@@ -2023,6 +2055,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             fs.image_rgb, traces, cal,
             edit_point_ids=edited_ids,
             image_data_uri=_get_masked_image_uri(fid, mask_specs),
+            plot_type=fs.plot_type,
         )
         _trace("overlay_plot.build", ms=int((time.perf_counter() - t0) * 1000))
         return go.FigureWidget(fig)
@@ -2128,6 +2161,140 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             )
             items.append(row)
         return ui.div(*items)
+
+    @render.ui
+    def dashboard_panel():
+        fid = file_id_rv()
+        _ = csv_revision()
+        _ = overlay_revision()
+        fs = pv.state.files.get(fid) if fid else None
+        if fs is None or fs.csv_df is None:
+            return None
+
+        df = fs.csv_df
+
+        if fs.plot_type == "scatter":
+            stats = compute_scatter_stats(df)
+            rows = []
+            for sname, s in stats["by_series"].items():
+                r_str = f"{s['r']:.4f}" if math.isfinite(s["r"]) else "—"
+                r2_str = f"{s['r2']:.4f}" if math.isfinite(s["r2"]) else "—"
+                rows.append(ui.tags.tr(
+                    ui.tags.td(sname),
+                    ui.tags.td(str(s["n"])),
+                    ui.tags.td(r_str),
+                    ui.tags.td(r2_str),
+                ))
+            ov = stats["overall"]
+            ov_r = f"{ov['r']:.4f}" if math.isfinite(ov["r"]) else "—"
+            ov_r2 = f"{ov['r2']:.4f}" if math.isfinite(ov["r2"]) else "—"
+            rows.append(ui.tags.tr(
+                ui.tags.th("Overall", scope="row"),
+                ui.tags.td(str(ov["n"])),
+                ui.tags.td(ov_r),
+                ui.tags.td(ov_r2),
+            ))
+            return ui.card(
+                ui.card_header("Correlation"),
+                ui.tags.table(
+                    ui.tags.thead(ui.tags.tr(
+                        ui.tags.th("Series"),
+                        ui.tags.th("n"),
+                        ui.tags.th("r"),
+                        ui.tags.th("R²"),
+                    )),
+                    ui.tags.tbody(*rows),
+                    class_="table table-sm table-striped",
+                ),
+                style="margin-top:12px;",
+            )
+
+        # ---- Time series dashboard ----
+        default_eb = fs.effective_error_bar_type or "SD"
+        try:
+            eb_type = input.eb_type_input() or default_eb
+        except Exception:
+            eb_type = default_eb
+
+        try:
+            percent = float(input.eb_percent_input() or fs.error_bar_percent)
+        except Exception:
+            percent = fs.error_bar_percent
+
+        series_names = list(dict.fromkeys(df["series"].astype(str).tolist()))
+        n_per_series: dict = {}
+        for sname in series_names:
+            safe = _safe_series_token(sname)
+            try:
+                val = input[f"n_input_{safe}"]()
+                n_per_series[sname] = int(val) if val is not None else None
+            except Exception:
+                n_per_series[sname] = None
+
+        needs_percent = eb_type in ("Confidence", "Prediction")
+        needs_n = eb_type in ("Confidence", "Prediction", "SE")
+
+        cal = cal_dict_from_result(fs.detection_result)
+        is_log = bool(cal.get("y_log_base"))
+
+        stats_df = compute_time_series_stats(df, eb_type, percent, n_per_series, is_log)
+
+        # Controls row
+        control_items = [
+            ui.div(
+                ui.input_select(
+                    "eb_type_input", "Error bar type",
+                    {t: t for t in VALID_ERROR_TYPES},
+                    selected=eb_type,
+                ),
+                style="flex:0 0 auto;",
+            ),
+        ]
+        if needs_percent:
+            control_items.append(ui.div(
+                ui.input_numeric("eb_percent_input", "Percent",
+                                  value=percent, min=50, max=99.9, step=0.5),
+                style="flex:0 0 auto;width:110px;",
+            ))
+        if needs_n:
+            for sname in series_names:
+                n_val = n_per_series.get(sname)
+                control_items.append(ui.div(
+                    ui.input_numeric(
+                        f"n_input_{_safe_series_token(sname)}",
+                        f"n ({sname})",
+                        value=n_val, min=2, step=1,
+                    ),
+                    style="flex:0 0 auto;width:120px;",
+                ))
+
+        controls = ui.div(
+            *control_items,
+            style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;",
+        )
+
+        if stats_df.empty:
+            table_ui = ui.tags.em("No error bar data available.")
+        else:
+            html_str = stats_df.to_html(
+                classes=["table", "table-sm", "table-striped", "table-bordered"],
+                float_format=lambda x: f"{x:.4g}",
+                na_rep="—",
+                border=0,
+                index_names=False,
+            )
+            table_ui = ui.div(
+                ui.HTML(html_str),
+                style="overflow-x:auto;font-size:13px;",
+            )
+
+        return ui.card(
+            ui.card_header("Data summary"),
+            controls,
+            ui.hr(),
+            table_ui,
+            style="margin-top:12px;",
+        )
 
     @reactive.calc
     def _active_series_info():
