@@ -37,6 +37,12 @@ from plotverify_core import (
 from plotverify_core.colors import FALLBACK_HEX, is_valid_hex
 
 
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def encode_image_data_uri(img_rgb: np.ndarray) -> str:
     """Encode an RGB ndarray as a ``data:image/png;base64,...`` URI.
 
@@ -580,9 +586,10 @@ def build_data_overlay_figure(
             x=trace.x, y=trace.y,
             mode=scatter_mode,
             line=dict(color=trace.color_hex, width=2),
-            marker=dict(color=trace.marker_color_hex, size=10,
-                        opacity=0.4 if is_scatter else 1.0,
-                        line=dict(color=marker_line_colors, width=marker_line_widths)),
+            marker=dict(
+                color=_hex_to_rgba(trace.marker_color_hex, 0.4) if is_scatter else trace.marker_color_hex,
+                size=10,
+                line=dict(color=marker_line_colors, width=marker_line_widths)),
             error_y=err_y,
             name=trace.series,
             legendgroup=trace.series,
