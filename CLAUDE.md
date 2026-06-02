@@ -56,6 +56,34 @@ That merge triggers `.github/workflows/deploy-shinylive.yml` (which lives only o
 
 If a new package is added to `requirements.txt` on `main`, manually update `shinylive_app/requirements.txt` on `shiny-manual` if the package is Pyodide-compatible, or omit it if it requires native extensions.
 
+### shiny-manual UI differences from main
+
+`shiny_app/app.py` on `shiny-manual` has these deliberate removals (EasyOCR is permanently unavailable in Pyodide, so these sections serve no purpose in the deployed app):
+
+| Removed from `main` | Reason |
+|---|---|
+| "X/Y label bands" accordion panel | Controls OCR band regions; irrelevant without EasyOCR |
+| "Calibration points" accordion panel | Shows OCR-detected tick pairs; never populated without EasyOCR |
+| Bottom "Detection settings" accordion | `cfg_min_ocr_conf` input; irrelevant without EasyOCR |
+| Bottom "Frame-detection warnings" accordion | OCR pipeline warnings; never populated without EasyOCR |
+| `ocr_banner` sidebar widget | "EasyOCR not installed" warning; always true, adds noise |
+
+Band configuration values (`y_band_extra_px=90`, etc.) and `min_ocr_confidence=0.20` are hardcoded in place of the removed inputs so the `_run_auto_detection` path and band visualisation still work if EasyOCR is ever added to Pyodide.
+
+### Resolving merge conflicts after `git merge main`
+
+When merging `main` into `shiny-manual`, conflicts in `shiny_app/app.py` typically fall into one of two categories:
+
+1. **Changes to the removed sections** — keep the `shiny-manual` version (the section stays removed).
+2. **Changes elsewhere in `app.py`** — accept the `main` version as-is.
+
+The removed sections are confined to:
+- `_calibration_tab()` — right accordion definition and `open=` list
+- `_make_ui()` — sidebar `ocr_banner` output line
+- Server section — `@render.ui` functions: `ocr_banner`, `bands_panel`, `calib_points_panel`, `warnings_panel`
+- `cal_plot` render and `_push_bands_to_widget` — hardcoded band defaults (lines starting `_y_extra, _y_vert, _y_slide = 90, 0, 0`)
+- `_run_auto_detection` — hardcoded `CalibrationConfig(...)` kwargs
+
 ## Architecture
 
 Three layers sit on top of the calibration engine:

@@ -2,12 +2,11 @@
 
 Layout:
 
-- Upload card (image + CSV) and an EasyOCR-availability banner at the top.
+- Upload card (image + CSV) at the top.
 - ``Calibrate`` tab:
     * Main image with two draggable P1/P2 anchor circles.
-    * Right column with three collapsible accordions: X/Y label bands,
-      Calibration points, Manual Values.
-    * Bottom accordion: detection settings + frame-detection warnings.
+    * Right column with three collapsible accordions: Manual Values,
+      Series colors, Plot type.
 - ``Overlay`` tab:
     * Calibrated image with extracted data drawn in data coordinates.
     * Series-visibility toggles and ``Export updated CSV``.
@@ -219,16 +218,6 @@ def _calibration_tab() -> ui.Tag:
             ui.div(
                 ui.accordion(
                     ui.accordion_panel(
-                        "X/Y label bands",
-                        ui.output_ui("bands_panel"),
-                        value="bands",
-                    ),
-                    ui.accordion_panel(
-                        "Calibration points",
-                        ui.output_ui("calib_points_panel"),
-                        value="calib_points",
-                    ),
-                    ui.accordion_panel(
                         "Manual Values",
                         ui.output_ui("manual_values_panel"),
                         value="manual_values",
@@ -251,28 +240,11 @@ def _calibration_tab() -> ui.Tag:
                         value="plot_type",
                     ),
                     id="right_accordion",
-                    open=["bands", "manual_values", "series_colors"],
+                    open=["manual_values", "series_colors"],
                     multiple=True,
                 ),
             ),
             col_widths=(8, 4),
-        ),
-        ui.accordion(
-            ui.accordion_panel(
-                "Detection settings",
-                ui.row(
-                    ui.column(4, ui.input_numeric("cfg_min_ocr_conf",
-                                                    "Min OCR confidence", value=0.20,
-                                                    min=0.0, max=1.0, step=0.05)),
-                ),
-            ),
-            ui.accordion_panel(
-                "Frame-detection warnings",
-                ui.output_ui("warnings_panel"),
-            ),
-            id="bottom_accordion",
-            open=[],
-            multiple=True,
         ),
     )
 
@@ -645,7 +617,6 @@ def _make_ui() -> ui.Tag:
                             multiple=False),
             ui.input_file("csv_upload", "Data CSV",
                             accept=[".csv"], multiple=False),
-            ui.output_ui("ocr_banner"),
             ui.hr(),
             ui.output_ui("session_status"),
             width=320,
@@ -886,27 +857,6 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             fs.plot_type = input.plot_type_select()
         _bump_overlay()
 
-    # ------------------------------------------------------------------
-    # OCR banner + status
-    # ------------------------------------------------------------------
-
-    @render.ui
-    def ocr_banner():
-        if ocr_available():
-            return ui.div(
-                ui.tags.span("EasyOCR detected — auto-calibration available.",
-                              style="color:#1b5e20;"),
-                style="font-size:12px; margin-top:6px;",
-            )
-        return ui.div(
-            ui.tags.strong("EasyOCR not installed."),
-            ui.tags.br(),
-            "Auto-calibration is disabled. You can still calibrate manually "
-            "using P1, P2 and P3 anchors.",
-            class_="alert alert-warning",
-            style="padding:6px 10px; margin-top:6px;",
-        )
-
     @render.ui
     def session_status():
         # Subscribe to cal_revision + overlay_revision so the status text
@@ -985,13 +935,6 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             _frame = axis_frame_rv()
             _y_extra, _y_vert, _y_slide = 90, 0, 0
             _x_extra, _x_horiz, _x_slide = 28, 0, 0
-            if _frame is not None:
-                _y_extra = _safe_int(input.band_y_extra, 90, "band_y_extra")
-                _y_vert = _safe_int(input.band_y_vert, 0, "band_y_vert")
-                _y_slide = _safe_int(input.band_y_slide, 0, "band_y_slide")
-                _x_extra = _safe_int(input.band_x_extra, 28, "band_x_extra")
-                _x_horiz = _safe_int(input.band_x_horiz, 0, "band_x_horiz")
-                _x_slide = _safe_int(input.band_x_slide, 0, "band_x_slide")
         if _frame is not None:
             _yb_raw = y_label_band(_frame, extra_left=_y_extra, extra_vertical=_y_vert)
             _yb = (_yb_raw[0] + _y_slide, _yb_raw[1], _yb_raw[2] + _y_slide, _yb_raw[3])
@@ -1097,12 +1040,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             with widget.batch_update():
                 widget.layout.shapes = []
             return
-        y_extra = _safe_int(input.band_y_extra, 90, "band_y_extra")
-        y_vert = _safe_int(input.band_y_vert, 0, "band_y_vert")
-        y_slide = _safe_int(input.band_y_slide, 0, "band_y_slide")
-        x_extra = _safe_int(input.band_x_extra, 28, "band_x_extra")
-        x_horiz = _safe_int(input.band_x_horiz, 0, "band_x_horiz")
-        x_slide = _safe_int(input.band_x_slide, 0, "band_x_slide")
+        y_extra, y_vert, y_slide = 90, 0, 0
+        x_extra, x_horiz, x_slide = 28, 0, 0
         _yb = y_label_band(frame, extra_left=y_extra, extra_vertical=y_vert)
         yb = (_yb[0] + y_slide, _yb[1], _yb[2] + y_slide, _yb[3])
         _xb = x_label_band(frame, extra_below=x_extra, extra_horizontal=x_horiz)
@@ -1278,13 +1217,13 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             )
             return
         cfg = CalibrationConfig(
-            y_band_extra_px=_safe_int(input.band_y_extra, 90, "band_y_extra"),
-            y_band_extra_vertical_px=_safe_int(input.band_y_vert, 0, "band_y_vert"),
-            y_band_x_offset=_safe_int(input.band_y_slide, 0, "band_y_slide"),
-            x_band_extra_px=_safe_int(input.band_x_extra, 28, "band_x_extra"),
-            x_band_extra_horizontal_px=_safe_int(input.band_x_horiz, 0, "band_x_horiz"),
-            x_band_y_offset=_safe_int(input.band_x_slide, 0, "band_x_slide"),
-            min_ocr_confidence=_safe_float(input.cfg_min_ocr_conf, 0.20, "cfg_min_ocr_conf"),
+            y_band_extra_px=90,
+            y_band_extra_vertical_px=0,
+            y_band_x_offset=0,
+            x_band_extra_px=28,
+            x_band_extra_horizontal_px=0,
+            x_band_y_offset=0,
+            min_ocr_confidence=0.20,
         )
         with ui.Progress(min=0, max=1) as p:
             p.set(0.1, message="Running OCR + geometry…")
@@ -1745,92 +1684,6 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     # ------------------------------------------------------------------
 
     @render.ui
-    def bands_panel():
-        if not ocr_available():
-            return ui.tags.em("Disabled — EasyOCR is not installed.")
-        fid = file_id_rv()
-        if fid is None:
-            return ui.tags.em("Upload an image to configure label bands.")
-        return ui.div(
-            ui.tags.strong("Y-label band"),
-            ui.row(
-                ui.column(4, ui.input_numeric(
-                    "band_y_extra", "Left ext. (px)", value=90, step=5,
-                )),
-                ui.column(4, ui.input_numeric(
-                    "band_y_vert", "V. trim (px)", value=0, step=5,
-                )),
-                ui.column(4, ui.input_numeric(
-                    "band_y_slide", "H. slide (px)", value=0, step=5,
-                )),
-            ),
-            ui.tags.strong("X-label band"),
-            ui.row(
-                ui.column(4, ui.input_numeric(
-                    "band_x_extra", "Below ext. (px)", value=28, step=5,
-                )),
-                ui.column(4, ui.input_numeric(
-                    "band_x_horiz", "H. trim (px)", value=0, step=5,
-                )),
-                ui.column(4, ui.input_numeric(
-                    "band_x_slide", "V. slide (px)", value=0, step=5,
-                )),
-            ),
-            ui.tags.small(
-                "Ext: how far from axis. Trim: shrink from ends. "
-                "Slide: shift band along axis (±into plot).",
-                style="color:#666; margin-top:4px; display:block;",
-            ),
-        )
-
-    @render.ui
-    def calib_points_panel():
-        fid = file_id_rv()
-        fs = pv.state.files.get(fid) if fid is not None else None
-        if fs is None:
-            return ui.tags.em("No file loaded.")
-        res = fs.detection_result
-        if res is None or not res.success:
-            return ui.tags.em("Run detection (auto) or apply Manual Values to populate.")
-        # Build a compact two-column table: x-axis ticks + y-axis ticks.
-        rows_x = []
-        for tick in res.x_paired_ticks:
-            rows_x.append(ui.tags.tr(
-                ui.tags.td(f"{tick.data_value:g}"),
-                ui.tags.td(f"{tick.pixel_position:.1f}"),
-                ui.tags.td(f"{tick.source}"),
-            ))
-        rows_y = []
-        for tick in res.y_paired_ticks:
-            rows_y.append(ui.tags.tr(
-                ui.tags.td(f"{tick.data_value:g}"),
-                ui.tags.td(f"{tick.pixel_position:.1f}"),
-                ui.tags.td(f"{tick.source}"),
-            ))
-        def _table(title, rows):
-            if not rows:
-                return ui.div(ui.tags.strong(title), ui.tags.em(" (no paired ticks)"))
-            return ui.tags.div(
-                ui.tags.strong(title),
-                ui.tags.table(
-                    ui.tags.thead(ui.tags.tr(
-                        ui.tags.th("Data"), ui.tags.th("Pixel"), ui.tags.th("Source"))),
-                    ui.tags.tbody(*rows),
-                    class_="table table-sm",
-                    style="margin-bottom:6px;",
-                ),
-            )
-        return ui.div(
-            _table("X-axis ticks", rows_x),
-            _table("Y-axis ticks", rows_y),
-            ui.tags.small(
-                "Tick editing is not yet wired in Shiny — use the Streamlit app "
-                "for now if you need to edit paired ticks.",
-                style="color:#666;",
-            ),
-        )
-
-    @render.ui
     def manual_values_panel():
         fid = file_id_rv()
         if fid is None:
@@ -1978,20 +1831,6 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             anchors_rv.set(a)
         finally:
             syncing["inputs_to_shapes"] = False
-
-    @render.ui
-    def warnings_panel():
-        fid = file_id_rv()
-        fs = pv.state.files.get(fid) if fid is not None else None
-        if fs is None:
-            return ui.tags.em("No file loaded.")
-        res = fs.detection_result
-        if res is None:
-            return ui.tags.em("No detection run yet.")
-        warnings = list(res.warnings or [])
-        if not warnings:
-            return ui.tags.em("No warnings.")
-        return ui.tags.ul(*[ui.tags.li(w) for w in warnings])
 
     # ------------------------------------------------------------------
     # Overlay tab
