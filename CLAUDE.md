@@ -67,6 +67,8 @@ If a new package is added to `requirements.txt` on `main`, manually update `shin
 | Bottom "Detection settings" accordion | `cfg_min_ocr_conf` input; irrelevant without EasyOCR |
 | Bottom "Frame-detection warnings" accordion | OCR pipeline warnings; never populated without EasyOCR |
 | `ocr_banner` sidebar widget | "EasyOCR not installed" warning; always true, adds noise |
+| "Run detection" button | Triggers OCR auto-calibration; always fails without EasyOCR |
+| "Detect axis frame" button | Geometry-based frame detection; removed to simplify UI |
 
 Band configuration values (`y_band_extra_px=90`, etc.) and `min_ocr_confidence=0.20` are hardcoded in place of the removed inputs so the `_run_auto_detection` path and band visualisation still work if EasyOCR is ever added to Pyodide.
 
@@ -80,7 +82,7 @@ When merging `main` into `shiny-manual`, conflicts in `shiny_app/app.py` typical
 The removed sections are confined to:
 - `_calibration_tab()` — right accordion definition and `open=` list
 - `_make_ui()` — sidebar `ocr_banner` output line
-- Server section — `@render.ui` functions: `ocr_banner`, `bands_panel`, `calib_points_panel`, `warnings_panel`
+- Server section — `@render.ui` functions: `ocr_banner`, `bands_panel`, `calib_points_panel`, `warnings_panel`; `@reactive.effect` functions: `_run_auto_detection`, `_detect_axis_frame_only`
 - `cal_plot` render and `_push_bands_to_widget` — hardcoded band defaults (lines starting `_y_extra, _y_vert, _y_slide = 90, 0, 0`)
 - `_run_auto_detection` — hardcoded `CalibrationConfig(...)` kwargs
 

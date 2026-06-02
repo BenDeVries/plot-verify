@@ -95,9 +95,6 @@ def _safe_str(getter, default: str, label: str = "input") -> str:
 
 
 from axis_pipeline import (
-    CalibrationConfig,
-    detect_axis_frame,
-    ocr_available,
     render_overlay,
     x_label_band,
     y_label_band,
@@ -201,9 +198,6 @@ def _calibration_tab() -> ui.Tag:
                             style="flex: 1 1 auto; min-width: 0;",
                         ),
                         ui.div(
-                            ui.input_action_button("run_detection", "Run detection",
-                                                    class_="btn-primary"),
-                            ui.input_action_button("detect_frame", "Detect axis frame"),
                             ui.input_action_button("reset_anchors", "Reset anchors"),
                             style="display:flex; gap:6px; flex-shrink: 0;",
                         ),
@@ -643,7 +637,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     csv_revision = reactive.value(0)          # bump after CSV add/replace
     show_diagnostic = reactive.value(False)   # diagnostic-overlay toggle (placeholder)
     selected_anchor = reactive.value(None)    # "P1"/"P2"/None — keyboard target
-    axis_frame_rv = reactive.value(None)      # AxisFrame from detect_frame / auto-cal
+    axis_frame_rv = reactive.value(None)      # AxisFrame bbox for band shape rendering
     selected_overlay_rv = reactive.value(None)  # {pid, part} for overlay point selection
 
     # CRITICAL: calling `cal_revision()` inside a reactive effect subscribes
@@ -772,31 +766,6 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # it; without this the first render pays the PNG-encoding cost.
         _get_image_uri(fid)
         new_anchors = default_anchors_for_image(w, h)
-        # Auto-detect axis frame on upload so band shapes appear immediately
-        # without a separate "Detect axis frame" click.
-        detected_frame = None
-        if pv.ocr_available:
-            with ui.Progress(min=0, max=1) as p:
-                p.set(0.1, message="Detecting axis frame…")
-                try:
-                    preview = detect_axis_frame(fs.image_bgr)
-                    if preview.bbox is not None:
-                        detected_frame = preview.bbox
-                        new_anchors = Anchors(
-                            p1_pixel=(float(preview.bbox.left),
-                                      float(preview.bbox.bottom)),
-                            p2_pixel=(float(preview.bbox.right),
-                                      float(preview.bbox.bottom)),
-                            p3_pixel=(float(preview.bbox.left),
-                                      float(preview.bbox.top)),
-                            p1_data_x=new_anchors.p1_data_x,
-                            p2_data_x=new_anchors.p2_data_x,
-                            p1_data_y=new_anchors.p1_data_y,
-                            p3_data_y=new_anchors.p3_data_y,
-                        )
-                except Exception as exc:
-                    _trace("upload_auto_detect.error", error=repr(exc))
-                p.set(1.0)
         # Suppress the input→anchors echo while we set defaults: when the
         # manual-values panel first mounts its inputs default to 0.0, and
         # without this guard `_inputs_to_anchors` would overwrite the just-
@@ -808,7 +777,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             syncing["shapes_to_inputs"] = False
         selected_anchor.set(None)
         selected_overlay_rv.set(None)
-        axis_frame_rv.set(detected_frame)
+        axis_frame_rv.set(None)
         _bump_cal()
         _bump_overlay()
         if fs.image_downscale_factor < 1.0:
@@ -1202,76 +1171,6 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             ui.notification_show("Manual calibration applied.", type="message")
         _bump_cal()
         _bump_overlay()
-
-    @reactive.effect
-    @reactive.event(input.run_detection)
-    def _run_auto_detection():
-        fid = file_id_rv()
-        if fid is None:
-            ui.notification_show("Upload an image first.", type="warning")
-            return
-        if not pv.ocr_available:
-            ui.notification_show(
-                "EasyOCR is not installed — auto-calibration unavailable. "
-                "Use Manual Values instead.", type="warning",
-            )
-            return
-        cfg = CalibrationConfig(
-            y_band_extra_px=90,
-            y_band_extra_vertical_px=0,
-            y_band_x_offset=0,
-            x_band_extra_px=28,
-            x_band_extra_horizontal_px=0,
-            x_band_y_offset=0,
-            min_ocr_confidence=0.20,
-        )
-        with ui.Progress(min=0, max=1) as p:
-            p.set(0.1, message="Running OCR + geometry…")
-            try:
-                result = pv.run_auto_calibration(fid, config=cfg)
-            except Exception as e:
-                ui.notification_show(f"Auto-calibration failed: {e}", type="error")
-                return
-            p.set(1.0)
-        anchors_rv.set(anchors_from_result(result, anchors_rv()))
-        if result.bbox is not None:
-            axis_frame_rv.set(result.bbox)
-        _bump_cal()
-        _bump_overlay()
-        if not result.success:
-            ui.notification_show(
-                "Detection failed; switch to Manual Values to calibrate.",
-                type="warning",
-            )
-
-    @reactive.effect
-    @reactive.event(input.detect_frame)
-    def _detect_axis_frame_only():
-        fid = file_id_rv()
-        fs = pv.state.files.get(fid) if fid is not None else None
-        if fs is None:
-            return
-        try:
-            preview = detect_axis_frame(fs.image_bgr)
-        except Exception as e:
-            ui.notification_show(f"Frame detection failed: {e}", type="error")
-            return
-        if preview.bbox is None:
-            ui.notification_show("No axis frame detected.", type="warning")
-            return
-        bbox = preview.bbox
-        axis_frame_rv.set(bbox)
-        a = anchors_rv()
-        new_a = Anchors(
-            p1_pixel=(float(bbox.left), float(bbox.bottom)),
-            p2_pixel=(float(bbox.right), float(bbox.bottom)),
-            p3_pixel=(float(bbox.left), float(bbox.top)),
-            p1_data_x=a.p1_data_x, p2_data_x=a.p2_data_x,
-            p1_data_y=a.p1_data_y, p3_data_y=a.p3_data_y,
-            x_log_base=a.x_log_base, y_log_base=a.y_log_base,
-        )
-        anchors_rv.set(new_a)
-        _bump_cal()
 
     @reactive.effect
     @reactive.event(input.reset_anchors)
