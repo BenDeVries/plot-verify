@@ -21,7 +21,7 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-Baseline: **156 passed, 1 xfailed** with EasyOCR installed; **137 passed** without (the 20 real-image regression tests in `tests/test_real_image_regression.py` auto-skip when `easyocr` is missing).
+Baseline: **201 passed, 1 xfailed** with EasyOCR installed; **181 passed** without (the 20 real-image regression tests in `tests/test_real_image_regression.py` auto-skip when `easyocr` is missing).
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the full suite on push and pull request against Python 3.10/3.11/3.12. The EasyOCR model is cached at `~/.EasyOCR` across runs.
 
@@ -38,7 +38,16 @@ git config core.hooksPath scripts/git-hooks
 | `main` | Active development branch |
 | `shiny-manual` | Deployment branch — `main` + GitHub Pages deploy infrastructure |
 
-On every push to `main`, `.github/workflows/sync-to-shiny-manual.yml` automatically merges `main` into `shiny-manual`. That merge triggers `.github/workflows/deploy-shinylive.yml` (which lives only on `shiny-manual`), rebuilding and deploying the shinylive bundle to GitHub Pages.
+The auto-sync workflow (`sync-to-shiny-manual.yml`) was removed. To deploy, manually merge `main` into `shiny-manual` and push:
+
+```bash
+git checkout shiny-manual
+git merge main
+git push origin shiny-manual
+git checkout main
+```
+
+That merge triggers `.github/workflows/deploy-shinylive.yml` (which lives only on `shiny-manual`), rebuilding and deploying the shinylive bundle to GitHub Pages.
 
 `shiny-manual` carries deployment-only files not present on `main`:
 - `.github/workflows/deploy-shinylive.yml` — GitHub Pages deploy trigger
@@ -46,8 +55,6 @@ On every push to `main`, `.github/workflows/sync-to-shiny-manual.yml` automatica
 - `scripts/build_shinylive.py` — shinylive bundle builder
 
 If a new package is added to `requirements.txt` on `main`, manually update `shinylive_app/requirements.txt` on `shiny-manual` if the package is Pyodide-compatible, or omit it if it requires native extensions.
-
-**Prerequisite:** A fine-grained PAT with "Contents: write" permission must be stored as repository secret `SYNC_PAT` for the sync workflow to push and trigger downstream workflows.
 
 ## Architecture
 
@@ -71,6 +78,7 @@ plotverify_core/               — UI-agnostic business logic
     masking.py                 — CIE Lab delta_e_mask, HSV masking primitives
     series_state.py            — SeriesState: per-series mask config
     serialization.py           — Session save/load as zip (manifest.json + images + csvs)
+    dashboard.py               — compute_time_series_stats(), compute_scatter_stats() — pure stats for Overlay dashboard
 
 axis_pipeline/                 — Core calibration engine (see section below)
 ```

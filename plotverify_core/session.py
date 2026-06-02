@@ -83,6 +83,12 @@ class PerFileState:
     # Calibration tab color picker.
     csv_has_series_color: bool = False
 
+    plot_type: str = "time_series"
+    csv_error_bar_type: Optional[str] = None
+    error_bar_type_override: Optional[str] = None
+    error_bar_percent: float = 95.0
+    series_sample_sizes: Dict[str, Optional[int]] = field(default_factory=dict)
+
     masking_choice: MaskingChoice = MaskingChoice.NO_MASK
     mask_ready: bool = False
     cal_masked_img_bgr: Optional[np.ndarray] = None
@@ -100,6 +106,10 @@ class PerFileState:
     review_reasons: List[str] = field(default_factory=list)
 
     export_filename: Optional[str] = None
+
+    @property
+    def effective_error_bar_type(self) -> Optional[str]:
+        return self.error_bar_type_override or self.csv_error_bar_type
 
     def is_calibrated(self) -> bool:
         return bool(self.calibration.get("applied"))

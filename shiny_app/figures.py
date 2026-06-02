@@ -473,6 +473,7 @@ def build_data_overlay_figure(
     height: int = 620,
     edit_point_ids: Optional[set[str]] = None,
     image_data_uri: Optional[str] = None,
+    plot_type: str = "time_series",
 ) -> go.Figure:
     """Build the calibrated overlay (image as background + scatter traces).
 
@@ -526,9 +527,11 @@ def build_data_overlay_figure(
 
     edit_point_ids = edit_point_ids or set()
 
+    is_scatter = plot_type == "scatter"
+
     for trace in traces:
         plot_visible = True if trace.visible else "legendonly"
-        if trace.has_err.any():
+        if trace.has_err.any() and not is_scatter:
             h_str = trace.color_hex.lstrip("#")
             fill_rgba = "rgba({},{},{},0.2)".format(
                 int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
@@ -570,11 +573,12 @@ def build_data_overlay_figure(
                 marker_line_colors.append("rgba(0,0,0,0.5)")
                 marker_line_widths.append(0.5)
 
+        scatter_mode = "markers" if is_scatter else "lines+markers"
         # customdata is [[pid], ...] for main scatter — one element per point so
         # the click handler can retrieve the exact EditableOverlay point_id.
         fig.add_trace(go.Scatter(
             x=trace.x, y=trace.y,
-            mode="lines+markers",
+            mode=scatter_mode,
             line=dict(color=trace.color_hex, width=2),
             marker=dict(color=trace.marker_color_hex, size=10,
                         line=dict(color=marker_line_colors, width=marker_line_widths)),

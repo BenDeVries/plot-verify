@@ -30,6 +30,7 @@ class LoadReport:
     n_reversed_error_bars: int = 0
     reversed_samples: List[Tuple[str, float]] = field(default_factory=list)
     has_series_color_column: bool = False
+    error_bar_type: Optional[str] = None
 
 
 def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
@@ -97,6 +98,12 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
                 f"series_color values; using {FALLBACK_HEX} as a fallback."
             )
             df.loc[invalid, "series_color"] = FALLBACK_HEX
+
+    if "error_bar_type" in df.columns:
+        non_null = df["error_bar_type"].dropna()
+        if len(non_null) > 0:
+            raw = str(non_null.iloc[0]).strip()
+            report.error_bar_type = raw.title() if raw else None
 
     # Reversed error bars: convention is lower ≤ y ≤ upper.
     eu = df["y_err_upper"]
