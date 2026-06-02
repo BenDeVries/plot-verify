@@ -15,7 +15,7 @@ import pandas as pd
 from .colors import FALLBACK_HEX, assign_palette_colors, is_valid_hex
 
 
-REQUIRED_COLUMNS = ["series", "x", "y"]
+REQUIRED_COLUMNS = ["x", "y"]
 OPTIONAL_ERROR_COLUMNS = ["y_err_lower", "y_err_upper"]
 
 
@@ -57,6 +57,9 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
     if missing:
         report.error = f"CSV is missing required columns: {missing}"
         return None, report
+
+    if "series" not in df.columns:
+        df["series"] = "Data"
 
     has_series_color = "series_color" in df.columns
     report.has_series_color_column = has_series_color
