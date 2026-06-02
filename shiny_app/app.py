@@ -2185,15 +2185,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                     ui.tags.td(r_str),
                     ui.tags.td(r2_str),
                 ))
-            ov = stats["overall"]
-            ov_r = f"{ov['r']:.4f}" if math.isfinite(ov["r"]) else "—"
-            ov_r2 = f"{ov['r2']:.4f}" if math.isfinite(ov["r2"]) else "—"
-            rows.append(ui.tags.tr(
-                ui.tags.th("Overall", scope="row"),
-                ui.tags.td(str(ov["n"])),
-                ui.tags.td(ov_r),
-                ui.tags.td(ov_r2),
-            ))
+            if len(stats["by_series"]) > 1:
+                ov = stats["overall"]
+                ov_r = f"{ov['r']:.4f}" if math.isfinite(ov["r"]) else "—"
+                ov_r2 = f"{ov['r2']:.4f}" if math.isfinite(ov["r2"]) else "—"
+                rows.append(ui.tags.tr(
+                    ui.tags.th("Overall", scope="row"),
+                    ui.tags.td(str(ov["n"])),
+                    ui.tags.td(ov_r),
+                    ui.tags.td(ov_r2),
+                ))
             return ui.card(
                 ui.card_header("Correlation"),
                 ui.tags.table(
