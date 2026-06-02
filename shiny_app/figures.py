@@ -581,6 +581,7 @@ def build_data_overlay_figure(
             mode=scatter_mode,
             line=dict(color=trace.color_hex, width=2),
             marker=dict(color=trace.marker_color_hex, size=10,
+                        opacity=0.4 if is_scatter else 1.0,
                         line=dict(color=marker_line_colors, width=marker_line_widths)),
             error_y=err_y,
             name=trace.series,
