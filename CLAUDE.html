@@ -358,7 +358,7 @@ display: none;
 working with code in this repository.</p>
 <div id="what-this-project-does" class="section level2">
 <h2>What this project does</h2>
-<p>PlotVerify is a Streamlit app for verifying AI-extracted data from
+<p>PlotVerify is a Shiny app for verifying AI-extracted data from
 scientific plots. It overlays user-supplied data (series, x/y values,
 confidence intervals, colors) on the source image and calibrates pixel
 coordinates to data coordinates using a multi-phase OCR + geometry
@@ -366,14 +366,18 @@ pipeline.</p>
 </div>
 <div id="running-the-app" class="section level2">
 <h2>Running the app</h2>
-<pre class="bash"><code>streamlit run app_auto_axis.py</code></pre>
+<pre class="bash"><code>shiny run app_shiny.py</code></pre>
+<p>The legacy single-image Streamlit workflow is still available at
+<code>app_auto_axis.py</code>
+(<code>streamlit run app_auto_axis.py</code>), but active development
+targets the Shiny app.</p>
 </div>
 <div id="tests-and-ci" class="section level2">
 <h2>Tests and CI</h2>
 <pre class="bash"><code>pip install -r requirements-dev.txt
 pytest -q</code></pre>
-<p>Baseline: <strong>156 passed, 1 xfailed</strong> with EasyOCR
-installed; <strong>137 passed</strong> without (the 20 real-image
+<p>Baseline: <strong>201 passed, 1 xfailed</strong> with EasyOCR
+installed; <strong>181 passed</strong> without (the 20 real-image
 regression tests in <code>tests/test_real_image_regression.py</code>
 auto-skip when <code>easyocr</code> is missing).</p>
 <p>GitHub Actions (<code>.github/workflows/tests.yml</code>) runs the
@@ -384,8 +388,77 @@ EasyOCR model is cached at <code>~/.EasyOCR</code> across runs.</p>
 with:</p>
 <pre class="bash"><code>git config core.hooksPath scripts/git-hooks</code></pre>
 </div>
+<div id="branch-structure" class="section level2">
+<h2>Branch structure</h2>
+<table>
+<colgroup>
+<col width="50%" />
+<col width="50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Branch</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>main</code></td>
+<td>Active development branch</td>
+</tr>
+<tr class="even">
+<td><code>shiny-manual</code></td>
+<td>Deployment branch — <code>main</code> + GitHub Pages deploy
+infrastructure</td>
+</tr>
+</tbody>
+</table>
+<p>The auto-sync workflow (<code>sync-to-shiny-manual.yml</code>) was
+removed. To deploy, manually merge <code>main</code> into
+<code>shiny-manual</code> and push:</p>
+<pre class="bash"><code>git checkout shiny-manual
+git merge main
+git push origin shiny-manual
+git checkout main</code></pre>
+<p>That merge triggers
+<code>.github/workflows/deploy-shinylive.yml</code> (which lives only on
+<code>shiny-manual</code>), rebuilding and deploying the shinylive
+bundle to GitHub Pages.</p>
+<p><code>shiny-manual</code> carries deployment-only files not present
+on <code>main</code>: -
+<code>.github/workflows/deploy-shinylive.yml</code> — GitHub Pages
+deploy trigger - <code>shinylive_app/requirements.txt</code> —
+Pyodide-compatible deps (no EasyOCR/PyTorch) -
+<code>scripts/build_shinylive.py</code> — shinylive bundle builder</p>
+<p>If a new package is added to <code>requirements.txt</code> on
+<code>main</code>, manually update
+<code>shinylive_app/requirements.txt</code> on <code>shiny-manual</code>
+if the package is Pyodide-compatible, or omit it if it requires native
+extensions.</p>
+</div>
 <div id="architecture" class="section level2">
 <h2>Architecture</h2>
+<p>Three layers sit on top of the calibration engine:</p>
+<pre><code>app_shiny.py
+    └── shiny_app/app.py       — Shiny UI: reactive layout, user interaction
+        shiny_app/figures.py   — Plotly figure builders (calibration edit + data overlay)
+
+plotverify_core/               — UI-agnostic business logic
+    app.py                     — PlotVerifyApp controller, owns AppState
+    session.py                 — AppState, PerFileState, ReviewStatus dataclasses
+    csv_io.py                  — CSV loading, validation, audit reports
+    image_io.py                — Image decode + downscaling
+    matching.py                — Image/CSV pairing by canonical stem
+    overlay_model.py           — EditableOverlay: per-point edits, preserves originals
+    overlay_traces.py          — build_overlay_traces(): UI-agnostic trace records
+    overlay_image.py           — ΔE mask preview compositing
+    colors.py                  — Hex validation, hex↔HSV/BGR, complementary picker
+    masking.py                 — CIE Lab delta_e_mask, HSV masking primitives
+    series_state.py            — SeriesState: per-series mask config
+    serialization.py           — Session save/load as zip (manifest.json + images + csvs)
+    dashboard.py               — compute_time_series_stats(), compute_scatter_stats() — pure stats for Overlay dashboard
+
+axis_pipeline/                 — Core calibration engine (see section below)</code></pre>
 <div id="axis_pipeline-the-core-calibration-engine" class="section level3">
 <h3><code>axis_pipeline/</code> — the core calibration engine</h3>
 <p>All new code should use this package directly. The public surface is
@@ -474,8 +547,8 @@ ticks; monotonicity enforcement</td>
 </tr>
 <tr class="odd">
 <td><code>legacy.py</code></td>
-<td>Adaptor that re-exposes the old dict-shaped API for the Streamlit
-app</td>
+<td>Adaptor that re-exposes the old dict-shaped API for the legacy
+Streamlit app</td>
 </tr>
 </tbody>
 </table>
@@ -519,8 +592,8 @@ x-calibration at P3’s pixel-x position.</p>
 <code>ocr.py</code>; not needed if injecting a custom runner)</li>
 <li><code>opencv-python</code> (cv2), <code>numpy</code>,
 <code>scipy</code> — image processing and calibration math</li>
-<li><code>streamlit</code>, <code>plotly</code>, <code>pandas</code>,
-<code>Pillow</code> — UI layer</li>
+<li><code>shiny</code>, <code>shinywidgets</code>, <code>plotly</code>,
+<code>pandas</code>, <code>Pillow</code> — UI layer</li>
 </ul>
 </div>
 </div>

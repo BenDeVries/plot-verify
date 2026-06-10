@@ -585,9 +585,9 @@ def build_data_overlay_figure(
         fig.add_trace(go.Scatter(
             x=trace.x, y=trace.y,
             mode=scatter_mode,
-            line=dict(color=trace.color_hex, width=2),
+            line=dict(color=trace.color_hex, width=0 if is_scatter else 2),
             marker=dict(
-                color=_hex_to_rgba(trace.marker_color_hex, 0.4) if is_scatter else trace.marker_color_hex,
+                color=_hex_to_rgba(trace.marker_color_hex, 0.35) if is_scatter else trace.marker_color_hex,
                 size=10,
                 line=dict(color=marker_line_colors, width=marker_line_widths)),
             error_y=err_y,
