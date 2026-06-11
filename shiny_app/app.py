@@ -1361,9 +1361,28 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         anchors_rv.set(default_anchors_for_image(w, h))
         _bump_cal()
 
+    @reactive.effect
+    def _reset_arrow_step_for_file():
+        fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
+            return
+        ui.update_numeric("overlay_arrow_step",
+                          value=_pixel_step_for_file(fs))
+
     # ------------------------------------------------------------------
     # Keyboard nudging of P1/P2 and overlay points
     # ------------------------------------------------------------------
+
+    def _pixel_step_for_file(fs) -> float:
+        """Return the y-axis data-per-pixel magnitude from calibration, or 0.1."""
+        try:
+            scale = abs(fs.detection_result.y_calibration.scale)
+            if scale > 0 and np.isfinite(scale):
+                return round(scale, 6)
+        except (AttributeError, TypeError):
+            pass
+        return 0.1
 
     def _apply_symmetry(x, y, upper, lower, mode):
         """Transform y_err_upper/lower before persisting based on symmetry mode.
@@ -1630,7 +1649,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return
-        base_step = _safe_float(input.overlay_arrow_step, 0.1, "overlay_arrow_step")
+        base_step = _safe_float(input.overlay_arrow_step,
+                                _pixel_step_for_file(fs), "overlay_arrow_step")
         step = base_step * shift_mult
         dx = dy = 0.0
         if key == "ArrowRight":
@@ -1644,27 +1664,32 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         else:
             return
 
+        sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
         new_x = float(pt.x) + dx
         new_y = float(pt.y)
         new_upper = pt.y_err_upper
         new_lower = pt.y_err_lower
 
-        if part == "center":
+        if sym != "none":
+            # Gang-move: all three shift by the same dy, preserving CI offsets.
             new_y += dy
-        elif part == "upper":
             if new_upper is not None and np.isfinite(float(new_upper)):
                 new_upper = float(new_upper) + dy
-            else:
-                new_upper = float(pt.y) + dy
-        elif part == "lower":
             if new_lower is not None and np.isfinite(float(new_lower)):
                 new_lower = float(new_lower) + dy
-            else:
-                new_lower = float(pt.y) + dy
-
-        sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
-        new_x, new_y, new_upper, new_lower = _apply_symmetry(
-            new_x, new_y, new_upper, new_lower, sym)
+        else:
+            if part == "center":
+                new_y += dy
+            elif part == "upper":
+                if new_upper is not None and np.isfinite(float(new_upper)):
+                    new_upper = float(new_upper) + dy
+                else:
+                    new_upper = float(pt.y) + dy
+            elif part == "lower":
+                if new_lower is not None and np.isfinite(float(new_lower)):
+                    new_lower = float(new_lower) + dy
+                else:
+                    new_lower = float(pt.y) + dy
 
         try:
             fs.overlay.edit_point(pid, new_x, new_y)
@@ -2509,8 +2534,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                       and np.isfinite(init_pt.y_err_lower) else 0.0)
         # Preserve arrow-step and symmetry settings across rebuilds.
         with reactive.isolate():
-            cur_step = _safe_float(input.overlay_arrow_step, 0.1,
-                                    "overlay_arrow_step")
+            cur_step = _safe_float(input.overlay_arrow_step,
+                                    _pixel_step_for_file(fs), "overlay_arrow_step")
             cur_sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
         return ui.div(
             ui.output_ui("overlay_selection_status"),
@@ -2541,8 +2566,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 )),
             ),
             ui.tags.small(
-                "Arrow keys move selected part (Shift = 10×). "
-                "Symmetry applied on Apply or arrow-key edit.",
+                "Arrow keys: with symmetry ≠ None, moves point+upper+lower together "
+                "(Shift = 10×). Symmetry derivation applies only on Apply or typed edit.",
                 style="color:#666; display:block; margin-bottom:4px;",
             ),
             ui.input_action_button("apply_point_edit", "Apply edit",
