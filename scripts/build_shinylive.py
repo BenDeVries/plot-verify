@@ -20,6 +20,7 @@ SITE = ROOT / "dist" / "shinylive" / "site"
 FILES = [
     (ROOT / "shiny_app" / "app.py", "app.py"),
     (ROOT / "shiny_app" / "figures.py", "figures.py"),
+    (ROOT / "shiny_app" / "user_manual.py", "user_manual.py"),
     (ROOT / "shinylive_app" / "requirements.txt", "requirements.txt"),
 ]
 PACKAGES = [
