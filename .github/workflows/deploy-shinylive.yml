@@ -31,10 +31,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/shinylive
-          key: shinylive-${{ runner.os }}-v1
+          key: shinylive-${{ runner.os }}-0.8.8
 
       - name: Install shinylive
-        run: pip install shinylive
+        run: pip install shinylive==0.8.8
 
       - name: Build bundle
         run: python scripts/build_shinylive.py
