@@ -15,19 +15,41 @@ from scipy import stats
 VALID_ERROR_TYPES = ("Confidence", "Prediction", "SE", "SD")
 
 
+def _resolve_log_base(log_base) -> Optional[float]:
+    """Coerce a user-supplied log base into a positive float > 1 or None.
+
+    Accepts the legacy bool form (``True`` → base 10) so callers that pre-date
+    the per-base fix keep working. Anything ≤ 1 is treated as linear (None).
+    """
+    if log_base is None or log_base is False:
+        return None
+    if log_base is True:
+        return 10.0
+    try:
+        b = float(log_base)
+    except (TypeError, ValueError):
+        return None
+    return b if b > 1.0 else None
+
+
 def compute_time_series_stats(
     df: pd.DataFrame,
     error_type: str,
     percent: float = 95.0,
     n_per_series: Optional[Dict[str, Optional[int]]] = None,
-    is_log_scale: bool = False,
+    log_base: Optional[float] = None,
 ) -> pd.DataFrame:
     """Wide-format MultiIndex DataFrame of point estimates and SDs.
 
     Columns are a two-level MultiIndex: level 0 is the series name, level 1
     is the metric label.  For linear scale the metrics are ``("μ", "σ")``;
     for log scale they are ``("μ", "σ_log", "σ")`` where ``σ_log`` is the SD
-    on the log scale and ``σ`` is the geometric (back-transformed) SD.
+    on the user's chosen log scale (``log_b``) and ``σ`` is the back-
+    transformed geometric SD (``base ** σ_log``).
+
+    ``log_base`` controls the log transform: ``None`` (linear), or a positive
+    float > 1 such as 10, ``math.e``, or 2. ``True`` is accepted as a legacy
+    alias for base 10.
 
     Returns an empty DataFrame when the input has no rows.
     """
@@ -35,6 +57,9 @@ def compute_time_series_stats(
         n_per_series = {}
 
     alpha = 1.0 - percent / 100.0
+    base = _resolve_log_base(log_base)
+    # log_b(x) = ln(x) / ln(base); precompute the divisor once.
+    ln_base = math.log(base) if base is not None else 1.0
     series_order = list(dict.fromkeys(df["series"].astype(str)))
 
     col_frames = []
@@ -49,11 +74,11 @@ def compute_time_series_stats(
         n_val = n_per_series.get(series)
 
         # Compute half-width in the appropriate space
-        if is_log_scale:
+        if base is not None:
             with np.errstate(invalid="ignore", divide="ignore"):
                 half_w = np.where(
                     (y > 0) & (lower > 0) & (upper > 0),
-                    (np.log(upper) - np.log(lower)) / 2.0,
+                    (np.log(upper) - np.log(lower)) / (2.0 * ln_base),
                     np.nan,
                 )
         else:
@@ -65,8 +90,8 @@ def compute_time_series_stats(
 
         sd = _sd_from_half_width(half_w, error_type, percent, alpha, n_val)
 
-        if is_log_scale:
-            sd_orig = np.where(np.isfinite(sd), np.exp(sd), np.nan)
+        if base is not None:
+            sd_orig = np.where(np.isfinite(sd), np.power(base, sd), np.nan)
             tuples = [(series, "μ"), (series, "σ_log"), (series, "σ")]
             data = np.column_stack([y, sd, sd_orig])
         else:
@@ -119,7 +144,7 @@ def build_time_series_display_df(
     eb_type: str,
     percent: float = 95.0,
     n_per_series: Optional[Dict[str, Optional[int]]] = None,
-    is_log_scale: bool = False,
+    log_base: Optional[float] = None,
     display_x: str = "None",
 ) -> pd.DataFrame:
     """Observation-indexed display DataFrame for time series w/ intervals.
@@ -130,6 +155,12 @@ def build_time_series_display_df(
     * ``"None"``          — Obs index, no x column
     * ``"Single column"`` — index is the mean x across series per observation
     * ``"Multi column"``  — Obs index + per-series x column before μ/σ columns
+
+    ``log_base`` controls the log transform applied to error-bar half-widths:
+    ``None`` (linear), or a positive float > 1 such as 10, ``math.e``, or 2.
+    ``σ_log`` is reported in the user's chosen base; ``σ`` is the back-
+    transformed geometric SD (``base ** σ_log``). ``True`` is accepted as a
+    legacy alias for base 10.
     """
     if n_per_series is None:
         n_per_series = {}
@@ -137,6 +168,8 @@ def build_time_series_display_df(
         return pd.DataFrame()
 
     alpha = 1.0 - percent / 100.0
+    base = _resolve_log_base(log_base)
+    ln_base = math.log(base) if base is not None else 1.0
     series_order = list(dict.fromkeys(df["series"].astype(str)))
 
     per_series: dict = {}
@@ -155,11 +188,11 @@ def build_time_series_display_df(
 
         n_val = n_per_series.get(series)
 
-        if is_log_scale:
+        if base is not None:
             with np.errstate(invalid="ignore", divide="ignore"):
                 half_w = np.where(
                     (y_s > 0) & (lo_s > 0) & (hi_s > 0),
-                    (np.log(hi_s) - np.log(lo_s)) / 2.0,
+                    (np.log(hi_s) - np.log(lo_s)) / (2.0 * ln_base),
                     np.nan,
                 )
         else:
@@ -171,9 +204,9 @@ def build_time_series_display_df(
 
         sd = _sd_from_half_width(half_w, eb_type, percent, alpha, n_val)
         entry: dict = {"x": x_s, "mu": y_s, "sd": sd}
-        if is_log_scale:
+        if base is not None:
             entry["sd_log"] = sd.copy()
-            entry["sd"] = np.where(np.isfinite(sd), np.exp(sd), np.nan)
+            entry["sd"] = np.where(np.isfinite(sd), np.power(base, sd), np.nan)
         per_series[series] = entry
 
     max_obs = max(len(v["x"]) for v in per_series.values())
@@ -194,7 +227,7 @@ def build_time_series_display_df(
             arrays.append(_pad(v["x"], max_obs))
         tuples.append((series, "μ"))
         arrays.append(_pad(v["mu"], max_obs))
-        if is_log_scale:
+        if base is not None:
             tuples.append((series, "σ_log"))
             arrays.append(_pad(v["sd_log"], max_obs))
         tuples.append((series, "σ"))

@@ -127,6 +127,7 @@ from .figures import (
     enforce_anchor_constraints,
     guide_line_traces,
 )
+from .user_manual import user_manual_tab
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +619,7 @@ def _make_ui() -> ui.Tag:
     return ui.page_navbar(
         _calibration_tab(),
         _overlay_tab(),
+        user_manual_tab(),
         title="PlotVerify (Shiny)",
         id="main_nav",
         sidebar=ui.sidebar(
@@ -2020,10 +2022,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         needs_n = eb_type in ("Confidence", "Prediction", "SE")
 
         cal = cal_dict_from_result(fs.detection_result)
-        is_log = bool(cal.get("y_log_base"))
+        y_log_base = cal.get("y_log_base")
 
         display_df = build_time_series_display_df(
-            df, eb_type, percent, n_per_series, is_log, display_x
+            df, eb_type, percent, n_per_series, y_log_base, display_x
         )
 
         # Top row: error bar type + percent + n inputs
