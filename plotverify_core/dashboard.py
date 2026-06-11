@@ -114,6 +114,114 @@ def _sd_from_half_width(
     return half_w / (t_crit * math.sqrt(1.0 + 1.0 / n))
 
 
+def build_time_series_display_df(
+    df: pd.DataFrame,
+    eb_type: str,
+    percent: float = 95.0,
+    n_per_series: Optional[Dict[str, Optional[int]]] = None,
+    is_log_scale: bool = False,
+    display_x: str = "None",
+) -> pd.DataFrame:
+    """Observation-indexed display DataFrame for time series w/ intervals.
+
+    Rows are indexed by observation number (1-based, sorted by x within each
+    series).  ``display_x`` controls x-column presence:
+
+    * ``"None"``          — Obs index, no x column
+    * ``"Single column"`` — index is the mean x across series per observation
+    * ``"Multi column"``  — Obs index + per-series x column before μ/σ columns
+    """
+    if n_per_series is None:
+        n_per_series = {}
+    if df.empty:
+        return pd.DataFrame()
+
+    alpha = 1.0 - percent / 100.0
+    series_order = list(dict.fromkeys(df["series"].astype(str)))
+
+    per_series: dict = {}
+    for series in series_order:
+        sdf = df[df["series"].astype(str) == series].copy()
+        y = pd.to_numeric(sdf["y"], errors="coerce").values
+        lower = pd.to_numeric(sdf["y_err_lower"], errors="coerce").values
+        upper = pd.to_numeric(sdf["y_err_upper"], errors="coerce").values
+        x_vals = pd.to_numeric(sdf["x"], errors="coerce").values
+
+        sort_idx = np.argsort(x_vals, kind="stable")
+        x_s = x_vals[sort_idx]
+        y_s = y[sort_idx]
+        lo_s = lower[sort_idx]
+        hi_s = upper[sort_idx]
+
+        n_val = n_per_series.get(series)
+
+        if is_log_scale:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                half_w = np.where(
+                    (y_s > 0) & (lo_s > 0) & (hi_s > 0),
+                    (np.log(hi_s) - np.log(lo_s)) / 2.0,
+                    np.nan,
+                )
+        else:
+            half_w = np.where(
+                np.isfinite(lo_s) & np.isfinite(hi_s),
+                (hi_s - lo_s) / 2.0,
+                np.nan,
+            )
+
+        sd = _sd_from_half_width(half_w, eb_type, percent, alpha, n_val)
+        entry: dict = {"x": x_s, "mu": y_s, "sd": sd}
+        if is_log_scale:
+            entry["sd_log"] = sd.copy()
+            entry["sd"] = np.where(np.isfinite(sd), np.exp(sd), np.nan)
+        per_series[series] = entry
+
+    max_obs = max(len(v["x"]) for v in per_series.values())
+    if max_obs == 0:
+        return pd.DataFrame()
+
+    def _pad(arr: np.ndarray, length: int) -> np.ndarray:
+        if len(arr) >= length:
+            return arr[:length]
+        return np.concatenate([arr, np.full(length - len(arr), np.nan)])
+
+    tuples: list = []
+    arrays: list = []
+
+    for series, v in per_series.items():
+        if display_x == "Multi column":
+            tuples.append((series, "x"))
+            arrays.append(_pad(v["x"], max_obs))
+        tuples.append((series, "μ"))
+        arrays.append(_pad(v["mu"], max_obs))
+        if is_log_scale:
+            tuples.append((series, "σ_log"))
+            arrays.append(_pad(v["sd_log"], max_obs))
+        tuples.append((series, "σ"))
+        arrays.append(_pad(v["sd"], max_obs))
+
+    if not arrays:
+        return pd.DataFrame()
+
+    data = np.column_stack(arrays)
+
+    if display_x == "Single column":
+        x_stack = np.full((max_obs, len(per_series)), np.nan)
+        for col_i, v in enumerate(per_series.values()):
+            n = len(v["x"])
+            x_stack[:n, col_i] = v["x"]
+        x_mean = np.nanmean(x_stack, axis=1)
+        index: pd.Index = pd.Index(x_mean, name="x")
+    else:
+        index = pd.Index(range(1, max_obs + 1), name="Obs")
+
+    return pd.DataFrame(
+        data,
+        index=index,
+        columns=pd.MultiIndex.from_tuples(tuples),
+    )
+
+
 def compute_scatter_stats(df: pd.DataFrame) -> dict:
     """Pearson correlation per series and overall.
 

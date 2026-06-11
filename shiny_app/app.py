@@ -112,8 +112,8 @@ from plotverify_core import (
 )
 from plotverify_core.dashboard import (
     VALID_ERROR_TYPES,
+    build_time_series_display_df,
     compute_scatter_stats,
-    compute_time_series_stats,
 )
 
 from .figures import (
@@ -2238,6 +2238,11 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         except Exception:
             percent = fs.error_bar_percent
 
+        try:
+            display_x = input.display_x_input() or "None"
+        except Exception:
+            display_x = "None"
+
         series_names = list(dict.fromkeys(df["series"].astype(str).tolist()))
         n_per_series: dict = {}
         for sname in series_names:
@@ -2254,10 +2259,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         cal = cal_dict_from_result(fs.detection_result)
         is_log = bool(cal.get("y_log_base"))
 
-        stats_df = compute_time_series_stats(df, eb_type, percent, n_per_series, is_log)
+        display_df = build_time_series_display_df(
+            df, eb_type, percent, n_per_series, is_log, display_x
+        )
 
-        # Controls row
-        control_items = [
+        # Top row: error bar type + percent + n inputs
+        top_row_items = [
             ui.div(
                 ui.input_select(
                     "eb_type_input", "Error bar type",
@@ -2268,7 +2275,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             ),
         ]
         if needs_percent:
-            control_items.append(ui.div(
+            top_row_items.append(ui.div(
                 ui.input_numeric("eb_percent_input", "Percent",
                                   value=percent, min=50, max=99.9, step=0.5),
                 style="flex:0 0 auto;width:110px;",
@@ -2276,7 +2283,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         if needs_n:
             for sname in series_names:
                 n_val = n_per_series.get(sname)
-                control_items.append(ui.div(
+                top_row_items.append(ui.div(
                     ui.input_numeric(
                         f"n_input_{_safe_series_token(sname)}",
                         f"n ({sname})",
@@ -2286,23 +2293,32 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 ))
 
         controls = ui.div(
-            *control_items,
-            style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;",
+            ui.div(
+                *top_row_items,
+                style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;",
+            ),
+            ui.div(
+                ui.input_select(
+                    "display_x_input", "Display x",
+                    {"None": "None", "Single column": "Single column", "Multi column": "Multi column"},
+                    selected=display_x,
+                ),
+                style="margin-top:8px;",
+            ),
         )
 
-        if stats_df.empty:
+        if display_df.empty:
             table_ui = ui.tags.em("No error bar data available.")
         else:
-            html_str = stats_df.to_html(
+            html_str = display_df.to_html(
                 classes=["table", "table-sm", "table-striped", "table-bordered"],
                 float_format=lambda x: f"{x:.4g}",
                 na_rep="—",
                 border=0,
-                index_names=False,
             )
             table_ui = ui.div(
                 ui.HTML(html_str),
-                style="overflow-x:auto;font-size:13px;",
+                style="overflow-x:auto;font-size:13px;width:100%;",
             )
 
         return ui.card(
@@ -2310,7 +2326,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             controls,
             ui.hr(),
             table_ui,
-            style="margin-top:12px;",
+            style="margin-top:12px;overflow:visible;",
         )
 
     @reactive.calc
