@@ -4,19 +4,18 @@ A single ``ui.nav_panel`` containing an accordion of reference sections that
 documents every tool in the workflow. All sections start collapsed.
 
 OCR-only sections (auto-detection, axis-frame, label bands, detection
-settings, calibration points table) are omitted when
-``axis_pipeline.ocr_available`` is not importable — this is the case on the
-``shiny-manual`` Pyodide deployment branch, which strips OCR/PyTorch from the
-bundle. The same source file therefore works on both branches without
-modification.
+settings, calibration points table) are omitted when EasyOCR is not available.
+``ocr_available()`` is called at import time — on the ``shiny-manual`` Pyodide
+deployment EasyOCR is not installed so it returns False. The same source file
+therefore works on both branches without modification.
 """
 from __future__ import annotations
 
 from shiny import ui
 
 try:
-    from axis_pipeline import ocr_available  # noqa: F401
-    _OCR_AVAILABLE = True
+    from axis_pipeline import ocr_available
+    _OCR_AVAILABLE = ocr_available()
 except ImportError:
     _OCR_AVAILABLE = False
 
