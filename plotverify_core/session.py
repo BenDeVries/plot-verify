@@ -82,6 +82,7 @@ class PerFileState:
     # color is "intentional": either CSV-provided or user-picked via the
     # Calibration tab color picker.
     csv_has_series_color: bool = False
+    background_color_override: str = "#ffffff"
 
     plot_type: str = "time_series"
     csv_error_bar_type: Optional[str] = None

@@ -104,6 +104,7 @@ from plotverify_core import (
     PlotVerifyApp,
     build_masked_overlay_image,
     build_overlay_traces,
+    hex_to_bgr,
     px_to_data,
 )
 from plotverify_core.dashboard import (
@@ -336,6 +337,9 @@ def _color_id(series_name: str) -> str:
 def _delta_e_id(series_name: str) -> str:
     """Return a valid Shiny input ID for a per-series ΔE threshold slider."""
     return "de_" + _safe_series_token(series_name)
+
+
+BG_COLOR_INPUT_ID = "pv_bg_color"
 
 
 def _mask_id(series_name: str) -> str:
@@ -733,18 +737,20 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         """
         if not mask_specs:
             return _get_image_uri(fid)
-        sig_inner = frozenset((c.lower(), int(d)) for _, c, d in mask_specs)
-        key = (fid, sig_inner)
-        cached = masked_image_uri_cache.get(key)
-        if cached is not None:
-            return cached
         fs = pv.state.files.get(fid)
         if fs is None or fs.image_bgr is None:
             return _get_image_uri(fid)
+        bg_hex = fs.background_color_override
+        sig_inner = frozenset((c.lower(), int(d)) for _, c, d in mask_specs)
+        key = (fid, sig_inner, bg_hex.lower())
+        cached = masked_image_uri_cache.get(key)
+        if cached is not None:
+            return cached
         t0 = time.perf_counter()
         masked_rgb = build_masked_overlay_image(
             fs.image_bgr,
             [(c, d) for _, c, d in mask_specs],
+            background_bgr=hex_to_bgr(bg_hex),
         )
         uri = encode_image_data_uri(masked_rgb)
         _trace("encode_masked_image", file_id=fid,
@@ -2162,6 +2168,29 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 "Overlay tab.",
                 style="color:#888;display:block;margin-bottom:6px;",
             ))
+
+        bg_initial = fs.background_color_override
+        bg_picker = ui.HTML(
+            f'<input type="color" class="pv-color-picker" '
+            f'data-input-id="{BG_COLOR_INPUT_ID}" '
+            f'value="{bg_initial}" '
+            f'style="width:28px;height:28px;border:1px solid #aaa;'
+            f'padding:0;background:none;cursor:pointer;vertical-align:middle;">'
+        )
+        bg_label = ui.tags.span(
+            "Background",
+            style=("flex:1 1 auto;min-width:0;overflow:hidden;"
+                   "text-overflow:ellipsis;white-space:nowrap;"
+                   "padding:0 8px;font-size:13px;"),
+        )
+        rows.append(ui.div(
+            ui.tags.hr(style="margin:6px 0;"),
+            ui.div(
+                bg_picker, bg_label,
+                style=("display:flex;align-items:center;gap:6px;padding:4px 0;"),
+            ),
+        ))
+
         return ui.div(*rows)
 
     @reactive.effect
@@ -2199,6 +2228,26 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 fs.series_color_overrides[name] = val
                 changed = True
         if changed:
+            with reactive.isolate():
+                _cur = overlay_revision()
+            overlay_revision.set(_cur + 1)
+
+    @reactive.effect
+    def _sync_bg_color():
+        """Mirror background color picker into PerFileState."""
+        try:
+            val = input[BG_COLOR_INPUT_ID]()
+        except Exception:
+            return
+        if not isinstance(val, str) or not val.startswith("#"):
+            return
+        fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None:
+            return
+        if fs.background_color_override != val:
+            fs.background_color_override = val
+            masked_image_uri_cache.clear()
             with reactive.isolate():
                 _cur = overlay_revision()
             overlay_revision.set(_cur + 1)
