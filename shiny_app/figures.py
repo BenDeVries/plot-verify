@@ -534,10 +534,11 @@ def build_data_overlay_figure(
     edit_point_ids = edit_point_ids or set()
 
     is_scatter = plot_type == "scatter"
+    is_forest = plot_type == "forest"
 
     for trace in traces:
         plot_visible = True if trace.visible else "legendonly"
-        if trace.has_err.any() and not is_scatter:
+        if trace.has_err.any() and not is_scatter and not is_forest:
             h_str = trace.color_hex.lstrip("#")
             fill_rgba = "rgba({},{},{},0.2)".format(
                 int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
@@ -557,15 +558,46 @@ def build_data_overlay_figure(
                 name=f"_pv_rib_l_{trace.series}",
                 showlegend=False, visible=plot_visible, hoverinfo="skip",
             ))
-        # error-bar visualisation
-        err_y = None
+        if is_forest and trace.has_err.any():
+            # Horizontal ribbon: the interval brackets the value axis, so each
+            # row gets a low-opacity band spanning [lower, upper] in x with a
+            # small vertical thickness centred on its row index. A single trace
+            # with None-separated sub-paths fills every row's band at once.
+            h_str = trace.color_hex.lstrip("#")
+            fill_rgba = "rgba({},{},{},0.2)".format(
+                int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
+            )
+            band_x: list = []
+            band_y: list = []
+            hh = 0.32  # half-height of the band in row-index units
+            for i in range(len(trace.x)):
+                if not trace.has_err[i]:
+                    continue
+                lo = float(trace.x[i] - trace.err_array_minus[i])
+                hi = float(trace.x[i] + trace.err_array_plus[i])
+                yc = float(trace.y[i])
+                band_x += [lo, hi, hi, lo, lo, None]
+                band_y += [yc - hh, yc - hh, yc + hh, yc + hh, yc - hh, None]
+            fig.add_trace(go.Scatter(
+                x=band_x, y=band_y,
+                mode="lines", line=dict(width=0),
+                fill="toself", fillcolor=fill_rgba,
+                legendgroup=trace.series,
+                name=f"_pv_rib_{trace.series}",
+                showlegend=False, visible=plot_visible, hoverinfo="skip",
+            ))
+        # error-bar visualisation — horizontal for forest (the interval brackets
+        # the value axis), vertical otherwise.
+        err_bar = None
         if trace.has_err.any():
-            err_y = dict(
+            err_bar = dict(
                 type="data", symmetric=False,
                 array=trace.err_array_plus,
                 arrayminus=trace.err_array_minus,
                 color=trace.color_hex, thickness=1.2, width=4,
             )
+        err_x = err_bar if is_forest else None
+        err_y = None if is_forest else err_bar
 
         # If any point in this series has been edited, mark with a black ring.
         point_ids = trace.point_ids or [f"{trace.series}#{i}" for i in range(len(trace.x))]
@@ -579,36 +611,71 @@ def build_data_overlay_figure(
                 marker_line_colors.append("rgba(0,0,0,0.5)")
                 marker_line_widths.append(0.5)
 
-        scatter_mode = "markers" if is_scatter else "lines+markers"
         # customdata is [[pid], ...] for main scatter — one element per point so
         # the click handler can retrieve the exact EditableOverlay point_id.
+        # Forest carries [[pid, status], ...] so the status note reaches the hover.
+        if is_forest:
+            scatter_mode = "markers"
+            line_width = 0
+            marker_fill = trace.marker_color_hex
+            _summary = (trace.is_summary if trace.is_summary is not None
+                        else [False] * len(trace.x))
+            marker_symbol = ["diamond" if s else "circle" for s in _summary]
+            _status = trace.status if trace.status is not None else [""] * len(trace.x)
+            customdata = [[pid, st] for pid, st in zip(point_ids, _status)]
+            hovertemplate = ("%{fullData.name}: %{x:.4g}"
+                             "<br>%{customdata[1]}"
+                             "<extra>%{customdata[0]}</extra>")
+        else:
+            scatter_mode = "markers" if is_scatter else "lines+markers"
+            line_width = 0 if is_scatter else 2
+            marker_fill = (_hex_to_rgba(trace.marker_color_hex, 0.35)
+                           if is_scatter else trace.marker_color_hex)
+            marker_symbol = "circle"
+            customdata = [[pid] for pid in point_ids]
+            hovertemplate = ("%{fullData.name}: (%{x:.4g}, %{y:.4g})"
+                             "<extra>%{customdata[0]}</extra>")
+
         fig.add_trace(go.Scatter(
             x=trace.x, y=trace.y,
             mode=scatter_mode,
-            line=dict(color=trace.color_hex, width=0 if is_scatter else 2),
+            line=dict(color=trace.color_hex, width=line_width),
             marker=dict(
-                color=_hex_to_rgba(trace.marker_color_hex, 0.35) if is_scatter else trace.marker_color_hex,
+                symbol=marker_symbol,
+                color=marker_fill,
                 size=10,
                 line=dict(color=marker_line_colors, width=marker_line_widths)),
+            error_x=err_x,
             error_y=err_y,
             name=trace.series,
             legendgroup=trace.series,
+            showlegend=not is_forest,
             visible=plot_visible,
-            customdata=[[pid] for pid in point_ids],
-            hovertemplate=("%{fullData.name}: (%{x:.4g}, %{y:.4g})"
-                           "<extra>%{customdata[0]}</extra>"),
+            customdata=customdata,
+            hovertemplate=hovertemplate,
         ))
         # Clickable caps at error-bar endpoints. Customdata has 2 elements
         # [pid, "upper"/"lower"] so the click handler distinguishes them from
-        # main-point clicks (1 element).
+        # main-point clicks (1 element). Forest intervals run horizontally, so
+        # the caps sit at the left/right ends of the row rather than above/below.
         if trace.has_err.any():
             _cap_idx = [int(i) for i in range(len(trace.x)) if trace.has_err[i]]
-            _cap_x = [float(trace.x[i]) for i in _cap_idx]
-            _upper_y = [float(trace.y[i] + trace.err_array_plus[i]) for i in _cap_idx]
-            _lower_y = [float(trace.y[i] - trace.err_array_minus[i]) for i in _cap_idx]
+            if is_forest:
+                _upper_x = [float(trace.x[i] + trace.err_array_plus[i]) for i in _cap_idx]
+                _lower_x = [float(trace.x[i] - trace.err_array_minus[i]) for i in _cap_idx]
+                _cap_y = [float(trace.y[i]) for i in _cap_idx]
+                _u_x, _u_y, _u_sym = _upper_x, _cap_y, "triangle-right"
+                _l_x, _l_y, _l_sym = _lower_x, _cap_y, "triangle-left"
+            else:
+                _cap_x = [float(trace.x[i]) for i in _cap_idx]
+                _u_x = _cap_x
+                _u_y = [float(trace.y[i] + trace.err_array_plus[i]) for i in _cap_idx]
+                _l_x = _cap_x
+                _l_y = [float(trace.y[i] - trace.err_array_minus[i]) for i in _cap_idx]
+                _u_sym, _l_sym = "triangle-up", "triangle-down"
             fig.add_trace(go.Scatter(
-                x=_cap_x, y=_upper_y, mode="markers",
-                marker=dict(symbol="triangle-up", size=7,
+                x=_u_x, y=_u_y, mode="markers",
+                marker=dict(symbol=_u_sym, size=7,
                             color=trace.color_hex, opacity=0.4,
                             line=dict(width=0)),
                 customdata=[[point_ids[i], "upper"] for i in _cap_idx],
@@ -618,8 +685,8 @@ def build_data_overlay_figure(
                 legendgroup=trace.series, visible=plot_visible,
             ))
             fig.add_trace(go.Scatter(
-                x=_cap_x, y=_lower_y, mode="markers",
-                marker=dict(symbol="triangle-down", size=7,
+                x=_l_x, y=_l_y, mode="markers",
+                marker=dict(symbol=_l_sym, size=7,
                             color=trace.color_hex, opacity=0.4,
                             line=dict(width=0)),
                 customdata=[[point_ids[i], "lower"] for i in _cap_idx],
@@ -630,12 +697,18 @@ def build_data_overlay_figure(
             ))
 
     # Selection-highlight traces — always present but start empty; updated
-    # in-place by _push_overlay_selection_to_widget on click.
-    for _sn, _sym, _sz in (
-        ("_pv_sel_center", "circle-open", 22),
-        ("_pv_sel_upper",  "triangle-up-open", 16),
-        ("_pv_sel_lower",  "triangle-down-open", 16),
-    ):
+    # in-place by _push_overlay_selection_to_widget on click. Forest intervals
+    # run horizontally, so the endpoint markers point left/right there.
+    _sel_specs = (
+        (("_pv_sel_center", "circle-open", 22),
+         ("_pv_sel_upper",  "triangle-right-open", 16),
+         ("_pv_sel_lower",  "triangle-left-open", 16))
+        if is_forest else
+        (("_pv_sel_center", "circle-open", 22),
+         ("_pv_sel_upper",  "triangle-up-open", 16),
+         ("_pv_sel_lower",  "triangle-down-open", 16))
+    )
+    for _sn, _sym, _sz in _sel_specs:
         fig.add_trace(go.Scatter(
             x=[], y=[], mode="markers",
             marker=dict(symbol=_sym, size=_sz, color="#ff6600",
@@ -659,6 +732,11 @@ def build_data_overlay_figure(
                          range=[float(np.log10(y_lo)), float(np.log10(y_hi))],
                          title=_log_axis_title("Y", y_log),
                          tickvals=y_tv, ticktext=y_tt)
+    elif is_forest:
+        # Categorical (row-index) axis — the source image already labels rows,
+        # so hide the numeric ticks to avoid a misleading second scale.
+        fig.update_yaxes(range=sorted([y_bottom, y_top]),
+                         title="", showticklabels=False)
     else:
         fig.update_yaxes(range=sorted([y_bottom, y_top]), title="Y")
     fig.update_layout(
@@ -680,6 +758,7 @@ def build_zoom_bubble_figure(
     *,
     image_data_uri: Optional[str] = None,
     height: int = 260,
+    plot_type: str = "time_series",
 ) -> go.Figure:
     """Small zoomed inset centred on the selected point or error-bar cap.
 
@@ -695,6 +774,7 @@ def build_zoom_bubble_figure(
     h_img, w_img = img_rgb.shape[:2]
     x_log = cal.get("x_log_base")
     y_log = cal.get("y_log_base")
+    is_forest = plot_type == "forest"
 
     x_c = float(pt.x)
     y_c = float(pt.y)
@@ -705,7 +785,15 @@ def build_zoom_bubble_figure(
     _raw_color = getattr(pt, "color_hex", FALLBACK_HEX)
     color = _raw_color if is_valid_hex(_raw_color) else FALLBACK_HEX
 
-    if part == "upper" and upper is not None:
+    if is_forest:
+        # Interval endpoints are x-values on a fixed row.
+        if part == "upper" and upper is not None:
+            focus_x, focus_y = upper, y_c
+        elif part == "lower" and lower is not None:
+            focus_x, focus_y = lower, y_c
+        else:
+            focus_x, focus_y = x_c, y_c
+    elif part == "upper" and upper is not None:
         focus_x, focus_y = x_c, upper
     elif part == "lower" and lower is not None:
         focus_x, focus_y = x_c, lower
@@ -719,10 +807,17 @@ def build_zoom_bubble_figure(
     focus_xp = _plot(focus_x, x_log)
     focus_yp = _plot(focus_y, y_log)
 
+    # In forest mode the interval brackets the value axis (x); otherwise y.
     if upper is not None and lower is not None:
-        err_h_plot = abs(_plot(upper, y_log) - _plot(lower, y_log))
+        if is_forest:
+            err_w_plot = abs(_plot(upper, x_log) - _plot(lower, x_log))
+            err_h_plot = None
+        else:
+            err_h_plot = abs(_plot(upper, y_log) - _plot(lower, y_log))
+            err_w_plot = None
     else:
         err_h_plot = None
+        err_w_plot = None
 
     # Full image extent in data coords — used for zoom radii, crosshairs, and
     # background image positioning.
@@ -739,11 +834,19 @@ def build_zoom_bubble_figure(
     # two axes have very different numeric scales.
     x_full = abs(_plot(x_right_d, x_log) - _plot(x_left_d, x_log))
     y_full = abs(_plot(y_top_d, y_log) - _plot(y_bot_d, y_log))
-    x_zoom_r = x_full * 0.05
-    if err_h_plot is not None and err_h_plot > 0:
-        y_zoom_r = err_h_plot * 0.8
-    else:
+    if is_forest:
+        # Interval runs along x; frame it horizontally and keep a few rows in view.
         y_zoom_r = y_full * 0.05
+        if err_w_plot is not None and err_w_plot > 0:
+            x_zoom_r = err_w_plot * 0.8
+        else:
+            x_zoom_r = x_full * 0.05
+    else:
+        x_zoom_r = x_full * 0.05
+        if err_h_plot is not None and err_h_plot > 0:
+            y_zoom_r = err_h_plot * 0.8
+        else:
+            y_zoom_r = y_full * 0.05
 
     x_lo_p, x_hi_p = focus_xp - x_zoom_r, focus_xp + x_zoom_r
     y_lo_p, y_hi_p = focus_yp - y_zoom_r, focus_yp + y_zoom_r
@@ -769,19 +872,26 @@ def build_zoom_bubble_figure(
         sizing="stretch", opacity=1.0, layer="below",
     ))
 
-    # Selected point with error bar.
+    # Selected point with error bar — horizontal for forest (interval on x),
+    # vertical otherwise (interval on y).
+    err_x_dict = None
     err_y_dict = None
     if upper is not None and lower is not None:
-        err_y_dict = dict(
+        _bar = dict(
             type="data", symmetric=False,
-            array=[max(0.0, upper - y_c)],
-            arrayminus=[max(0.0, y_c - lower)],
+            array=[max(0.0, upper - (x_c if is_forest else y_c))],
+            arrayminus=[max(0.0, (x_c if is_forest else y_c) - lower)],
             color=color, thickness=2, width=8,
         )
+        if is_forest:
+            err_x_dict = _bar
+        else:
+            err_y_dict = _bar
     fig.add_trace(go.Scatter(
         x=[x_c], y=[y_c], mode="markers",
         marker=dict(color=color, size=12,
                     line=dict(color="rgba(0,0,0,0.5)", width=0.5)),
+        error_x=err_x_dict,
         error_y=err_y_dict,
         name="_bub_pt", showlegend=False, hoverinfo="skip",
     ))
@@ -810,14 +920,22 @@ def build_zoom_bubble_figure(
     ))
 
     # Filled ribbon band showing the confidence interval at the selected point.
+    # Forest: horizontal band spanning [lower, upper] in x, thin in y (rows).
+    # Otherwise: vertical band spanning [lower, upper] in y, thin in x.
     if upper is not None and lower is not None:
         h_str = color.lstrip("#")
         fill_rgba = "rgba({},{},{},0.25)".format(
             int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16))
-        bw = x_zoom_r * 0.12
+        if is_forest:
+            bh = y_zoom_r * 0.12
+            rib_x = [lower,    upper,    upper,    lower,    lower]
+            rib_y = [y_c - bh, y_c - bh, y_c + bh, y_c + bh, y_c - bh]
+        else:
+            bw = x_zoom_r * 0.12
+            rib_x = [x_c - bw, x_c - bw, x_c + bw, x_c + bw, x_c - bw]
+            rib_y = [lower,    upper,    upper,    lower,    lower]
         fig.add_trace(go.Scatter(
-            x=[x_c - bw, x_c - bw, x_c + bw, x_c + bw, x_c - bw],
-            y=[lower,    upper,    upper,    lower,    lower],
+            x=rib_x, y=rib_y,
             mode="lines", fill="toself", fillcolor=fill_rgba,
             line=dict(width=0),
             name="_bub_ribbon", showlegend=False, hoverinfo="skip",

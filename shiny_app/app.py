@@ -94,6 +94,16 @@ def _safe_str(getter, default: str, label: str = "input") -> str:
         return default
 
 
+def _safe_bool(getter, default: bool, label: str = "input") -> bool:
+    """Bool counterpart. Cannot use `or` — a real ``False`` must survive."""
+    try:
+        val = getter()
+        return default if val is None else bool(val)
+    except Exception as exc:
+        _trace(f"{label}.safe_bool_fallback", default=default, error=repr(exc))
+        return default
+
+
 from axis_pipeline import (
     render_overlay,
     x_label_band,
@@ -109,6 +119,7 @@ from plotverify_core import (
 )
 from plotverify_core.dashboard import (
     VALID_ERROR_TYPES,
+    build_forest_display_df,
     build_time_series_display_df,
     compute_scatter_stats,
 )
@@ -231,6 +242,7 @@ def _calibration_tab() -> ui.Tag:
                             {
                                 "time_series": "Time series w/ intervals",
                                 "scatter": "Scatter plots",
+                                "forest": "Forest plot",
                             },
                         ),
                         value="plot_type",
@@ -460,7 +472,10 @@ _ANCHOR_KEY_SCRIPT = """<style>
                     if (cd && cd.length >= 1) {
                         var pid = cd[0];
                         if (typeof pid === 'string' && pid.indexOf('#') !== -1) {
-                            var part = (cd.length >= 2 && typeof cd[1] === 'string') ? cd[1] : 'center';
+                            // Only cap traces tag a part; the forest main
+                            // scatter puts a status note in cd[1], so restrict
+                            // to the exact 'upper'/'lower' sentinels.
+                            var part = (cd.length >= 2 && (cd[1] === 'upper' || cd[1] === 'lower')) ? cd[1] : 'center';
                             log('overlay click: ' + pid + ' part=' + part);
                             pvOverlayClickHandled = true;
                             if (typeof Shiny !== 'undefined' && Shiny.setInputValue) {
@@ -830,6 +845,11 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         except Exception as e:
             ui.notification_show(f"CSV load failed: {e}", type="error")
             return
+        # The loader auto-switches to "forest" for forest-shaped CSVs — reflect
+        # that in the Plot type control so the UI and state agree.
+        fs = pv.state.files.get(fid)
+        if fs is not None:
+            ui.update_select("plot_type_select", selected=fs.plot_type)
         selected_overlay_rv.set(None)
         with reactive.isolate():
             _cur_csv = csv_revision()
@@ -1078,16 +1098,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return
-        upper_xy = (
-            ([float(pt.x)], [float(pt.y_err_upper)])
-            if pt.y_err_upper is not None and np.isfinite(float(pt.y_err_upper))
-            else ([], [])
-        )
-        lower_xy = (
-            ([float(pt.x)], [float(pt.y_err_lower)])
-            if pt.y_err_lower is not None and np.isfinite(float(pt.y_err_lower))
-            else ([], [])
-        )
+        is_forest = fs.plot_type == "forest"
+        _u_ok = pt.y_err_upper is not None and np.isfinite(float(pt.y_err_upper))
+        _l_ok = pt.y_err_lower is not None and np.isfinite(float(pt.y_err_lower))
+        if is_forest:
+            # Interval runs along x, so the endpoints sit at (bound, row-y).
+            upper_xy = ([float(pt.y_err_upper)], [float(pt.y)]) if _u_ok else ([], [])
+            lower_xy = ([float(pt.y_err_lower)], [float(pt.y)]) if _l_ok else ([], [])
+        else:
+            upper_xy = ([float(pt.x)], [float(pt.y_err_upper)]) if _u_ok else ([], [])
+            lower_xy = ([float(pt.x)], [float(pt.y_err_lower)]) if _l_ok else ([], [])
         with widget.batch_update():
             if "_pv_sel_center" in trace_map:
                 trace_map["_pv_sel_center"].x = [float(pt.x)]
@@ -1169,14 +1189,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
         p3_px = (float(input.p3_px_x() or 0), float(input.p3_px_y() or 0))
         p2_px = (float(input.p2_px_x() or 0), float(input.p2_px_y() or 0))
+        p1_data_y = _num(input.p1_data_y(), cur.p1_data_y)
+        p3_data_y = _num(input.p3_data_y(), cur.p3_data_y)
         anchors = Anchors(
             p1_pixel=(p3_px[0], p2_px[1]),  # derived bottom-left corner
             p2_pixel=p2_px,
             p3_pixel=p3_px,
             p1_data_x=_num(input.p1_data_x(), cur.p1_data_x),
             p2_data_x=_num(input.p2_data_x(), cur.p2_data_x),
-            p1_data_y=_num(input.p1_data_y(), cur.p1_data_y),
-            p3_data_y=_num(input.p3_data_y(), cur.p3_data_y),
+            p1_data_y=p1_data_y,
+            p3_data_y=p3_data_y,
             x_log_base=_parse_log_base(input.x_log(), input.x_log_base_val()),
             y_log_base=_parse_log_base(input.y_log(), input.y_log_base_val()),
         )
@@ -1263,8 +1285,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             series = pid.rsplit("#", 1)[0]
         except (ValueError, IndexError):
             return
+        with reactive.isolate():
+            fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        is_forest = fs is not None and fs.plot_type == "forest"
         main_tr = cap_u_tr = cap_l_tr = None
-        rib_u_tr = rib_l_tr = None
+        rib_u_tr = rib_l_tr = rib_band_tr = None
         sel_center = sel_upper = sel_lower = None
         for tr in widget.data:
             n = getattr(tr, "name", "") or ""
@@ -1278,6 +1304,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 rib_u_tr = tr
             elif n == f"_pv_rib_l_{series}":
                 rib_l_tr = tr
+            elif n == f"_pv_rib_{series}":
+                rib_band_tr = tr
             elif n == "_pv_sel_center":
                 sel_center = tr
             elif n == "_pv_sel_upper":
@@ -1286,6 +1314,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 sel_lower = tr
         if main_tr is None:
             return
+        _u_ok = new_upper is not None and np.isfinite(float(new_upper))
+        _l_ok = new_lower is not None and np.isfinite(float(new_lower))
         # Find the series-local index by matching the pid in the trace's customdata.
         # customdata layout for main scatter: [[pid], [pid], ...]
         local_idx = None
@@ -1305,25 +1335,32 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 ys[local_idx] = float(new_y)
                 main_tr.x = xs
                 main_tr.y = ys
-            # Update error-bar arrays in-place.
-            ey = main_tr.error_y
-            if ey is not None and getattr(ey, "array", None) is not None:
-                arr_plus = list(ey.array)
-                _am = ey.arrayminus
+            # Update error-bar arrays in-place. Forest brackets the value axis
+            # (error_x) measured from x; time-series/scatter bracket y (error_y).
+            _e_base = float(new_x) if is_forest else float(new_y)
+            ebar = main_tr.error_x if is_forest else main_tr.error_y
+            if ebar is not None and getattr(ebar, "array", None) is not None:
+                arr_plus = list(ebar.array)
+                _am = ebar.arrayminus
                 arr_minus = list(_am) if _am is not None else [0.0] * len(arr_plus)
                 if 0 <= local_idx < len(arr_plus):
-                    if new_upper is not None and np.isfinite(float(new_upper)):
-                        arr_plus[local_idx] = max(0.0, float(new_upper) - float(new_y))
-                    if new_lower is not None and np.isfinite(float(new_lower)):
-                        arr_minus[local_idx] = max(0.0, float(new_y) - float(new_lower))
-                    ey.array = arr_plus
-                    ey.arrayminus = arr_minus
-            # Update ribbon traces (shaded fill between upper/lower error bounds).
-            # ribbon_y_upper / ribbon_y_lower hold absolute y_err_upper/lower values;
-            # ribbon_x is the x-coords of error-bar points sorted by x.
-            if (rib_u_tr is not None and rib_l_tr is not None
-                    and new_upper is not None and np.isfinite(float(new_upper))
-                    and new_lower is not None and np.isfinite(float(new_lower))):
+                    if _u_ok:
+                        arr_plus[local_idx] = max(0.0, float(new_upper) - _e_base)
+                    if _l_ok:
+                        arr_minus[local_idx] = max(0.0, _e_base - float(new_lower))
+                    ebar.array = arr_plus
+                    ebar.arrayminus = arr_minus
+            if is_forest:
+                # Forest ribbon is a single horizontal band rectangle per row.
+                if rib_band_tr is not None and _u_ok and _l_ok:
+                    hh = 0.32
+                    lo, hi, yc = float(new_lower), float(new_upper), float(new_y)
+                    rib_band_tr.x = [lo, hi, hi, lo, lo, None]
+                    rib_band_tr.y = [yc - hh, yc - hh, yc + hh, yc + hh, yc - hh, None]
+            elif (rib_u_tr is not None and rib_l_tr is not None
+                    and _u_ok and _l_ok):
+                # ribbon_y_upper / ribbon_y_lower hold absolute y_err_upper/lower;
+                # ribbon_x is the x-coords of error-bar points sorted by x.
                 rxs = list(rib_u_tr.x)
                 rys_u = list(rib_u_tr.y)
                 rys_l = list(rib_l_tr.y)
@@ -1340,7 +1377,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                     rib_u_tr.y = rys_u
                     rib_l_tr.x = rxs
                     rib_l_tr.y = rys_l
-            # Update clickable cap traces — match by pid (customdata[0]).
+            # Update clickable cap traces — match by pid (customdata[0]). Forest
+            # caps sit at (bound, row-y); vertical caps at (x, bound).
             for cap_tr, val in ((cap_u_tr, new_upper), (cap_l_tr, new_lower)):
                 if cap_tr is None or cap_tr.customdata is None or val is None:
                     continue
@@ -1348,24 +1386,34 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                     if str(list(row)[0]) == pid and np.isfinite(float(val)):
                         cxs = list(cap_tr.x)
                         cys = list(cap_tr.y)
-                        cxs[ci] = float(new_x)
-                        cys[ci] = float(val)
+                        if is_forest:
+                            cxs[ci] = float(val)
+                            cys[ci] = float(new_y)
+                        else:
+                            cxs[ci] = float(new_x)
+                            cys[ci] = float(val)
                         cap_tr.x = cxs
                         cap_tr.y = cys
                         break
-            # Update selection highlights.
+            # Update selection highlights. Forest endpoints are (bound, row-y).
             if sel_center is not None:
                 sel_center.x = [float(new_x)]
                 sel_center.y = [float(new_y)]
             if sel_upper is not None:
-                if new_upper is not None and np.isfinite(float(new_upper)):
+                if _u_ok and is_forest:
+                    sel_upper.x = [float(new_upper)]
+                    sel_upper.y = [float(new_y)]
+                elif _u_ok:
                     sel_upper.x = [float(new_x)]
                     sel_upper.y = [float(new_upper)]
                 else:
                     sel_upper.x = []
                     sel_upper.y = []
             if sel_lower is not None:
-                if new_lower is not None and np.isfinite(float(new_lower)):
+                if _l_ok and is_forest:
+                    sel_lower.x = [float(new_lower)]
+                    sel_lower.y = [float(new_y)]
+                elif _l_ok:
                     sel_lower.x = [float(new_x)]
                     sel_lower.y = [float(new_lower)]
                 else:
@@ -1392,10 +1440,21 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         if not cal.get("applied"):
             return
         part = sel.get("part", "center")
+        is_forest = fs.plot_type == "forest"
+        _u_ok = new_upper is not None and np.isfinite(float(new_upper))
+        _l_ok = new_lower is not None and np.isfinite(float(new_lower))
 
-        if part == "upper" and new_upper is not None and np.isfinite(float(new_upper)):
+        if is_forest:
+            # Endpoints are x-values on a fixed row.
+            if part == "upper" and _u_ok:
+                focus_x, focus_y = float(new_upper), float(new_y)
+            elif part == "lower" and _l_ok:
+                focus_x, focus_y = float(new_lower), float(new_y)
+            else:
+                focus_x, focus_y = float(new_x), float(new_y)
+        elif part == "upper" and _u_ok:
             focus_x, focus_y = float(new_x), float(new_upper)
-        elif part == "lower" and new_lower is not None and np.isfinite(float(new_lower)):
+        elif part == "lower" and _l_ok:
             focus_x, focus_y = float(new_x), float(new_lower)
         else:
             focus_x, focus_y = float(new_x), float(new_y)
@@ -1417,23 +1476,33 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         _, y_bot_d = px_to_data(0, h_img, cal)
         x_full = abs(_plot(x_right_d, x_log) - _plot(x_left_d, x_log))
         y_full = abs(_plot(y_top_d, y_log) - _plot(y_bot_d, y_log))
-        x_zoom_r = x_full * 0.05
 
-        if (new_upper is not None and np.isfinite(float(new_upper))
-                and new_lower is not None and np.isfinite(float(new_lower))):
-            err_h_plot = abs(_plot(float(new_upper), y_log) - _plot(float(new_lower), y_log))
-        else:
-            err_h_plot = None
-
-        if err_h_plot is not None and err_h_plot > 0:
-            y_zoom_r = err_h_plot * 0.8
-        else:
+        _has_iv = (new_upper is not None and np.isfinite(float(new_upper))
+                   and new_lower is not None and np.isfinite(float(new_lower)))
+        if is_forest:
+            # Interval runs along x; keep the vertical (row) framing steady.
+            err_w_plot = (abs(_plot(float(new_upper), x_log) - _plot(float(new_lower), x_log))
+                          if _has_iv else None)
+            x_zoom_r = err_w_plot * 0.8 if (err_w_plot and err_w_plot > 0) else x_full * 0.05
             try:
                 cur_range = widget.layout.yaxis.range
                 y_zoom_r = abs(cur_range[1] - cur_range[0]) / 2 if cur_range else y_full * 0.05
             except Exception as exc:
                 _trace("zoom_bubble.yaxis_range_error", error=repr(exc))
                 y_zoom_r = y_full * 0.05
+        else:
+            x_zoom_r = x_full * 0.05
+            err_h_plot = (abs(_plot(float(new_upper), y_log) - _plot(float(new_lower), y_log))
+                          if _has_iv else None)
+            if err_h_plot is not None and err_h_plot > 0:
+                y_zoom_r = err_h_plot * 0.8
+            else:
+                try:
+                    cur_range = widget.layout.yaxis.range
+                    y_zoom_r = abs(cur_range[1] - cur_range[0]) / 2 if cur_range else y_full * 0.05
+                except Exception as exc:
+                    _trace("zoom_bubble.yaxis_range_error", error=repr(exc))
+                    y_zoom_r = y_full * 0.05
 
         x_lo_p, x_hi_p = focus_xp - x_zoom_r, focus_xp + x_zoom_r
         y_lo_p, y_hi_p = focus_yp - y_zoom_r, focus_yp + y_zoom_r
@@ -1456,12 +1525,14 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             if bub_pt is not None:
                 bub_pt.x = [float(new_x)]
                 bub_pt.y = [float(new_y)]
-                ey = bub_pt.error_y
-                if ey is not None:
+                # Interval brackets x for forest, y otherwise.
+                _base = float(new_x) if is_forest else float(new_y)
+                ebar = bub_pt.error_x if is_forest else bub_pt.error_y
+                if ebar is not None:
                     if new_upper is not None and np.isfinite(float(new_upper)):
-                        ey.array = [max(0.0, float(new_upper) - float(new_y))]
+                        ebar.array = [max(0.0, float(new_upper) - _base)]
                     if new_lower is not None and np.isfinite(float(new_lower)):
-                        ey.arrayminus = [max(0.0, float(new_y) - float(new_lower))]
+                        ebar.arrayminus = [max(0.0, _base - float(new_lower))]
             if bub_sel is not None:
                 bub_sel.x = [focus_x]
                 bub_sel.y = [focus_y]
@@ -1470,14 +1541,18 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 bub_vline.x = [focus_x, focus_x]
             if bub_hline is not None:
                 bub_hline.y = [focus_y, focus_y]
-            if bub_ribbon is not None and (
-                    new_upper is not None and np.isfinite(float(new_upper))
-                    and new_lower is not None and np.isfinite(float(new_lower))):
-                bw = x_zoom_r * 0.12
-                x_c = float(new_x)
-                bub_ribbon.x = [x_c - bw, x_c - bw, x_c + bw, x_c + bw, x_c - bw]
-                bub_ribbon.y = [float(new_lower), float(new_upper),
-                                float(new_upper), float(new_lower), float(new_lower)]
+            if bub_ribbon is not None and _has_iv:
+                lo, hi = float(new_lower), float(new_upper)
+                if is_forest:
+                    bh = y_zoom_r * 0.12
+                    y_c = float(new_y)
+                    bub_ribbon.x = [lo, hi, hi, lo, lo]
+                    bub_ribbon.y = [y_c - bh, y_c - bh, y_c + bh, y_c + bh, y_c - bh]
+                else:
+                    bw = x_zoom_r * 0.12
+                    x_c = float(new_x)
+                    bub_ribbon.x = [x_c - bw, x_c - bw, x_c + bw, x_c + bw, x_c - bw]
+                    bub_ribbon.y = [lo, hi, hi, lo, lo]
             widget.layout.xaxis.range = [x_lo_p, x_hi_p]
             widget.layout.yaxis.range = [y_lo_p, y_hi_p]
 
@@ -1511,31 +1586,45 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             return
 
         sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
-        new_x = float(pt.x) + dx
+        is_forest = fs.plot_type == "forest"
+        new_x = float(pt.x)
         new_y = float(pt.y)
         new_upper = pt.y_err_upper
         new_lower = pt.y_err_lower
+        _u_ok = new_upper is not None and np.isfinite(float(new_upper))
+        _l_ok = new_lower is not None and np.isfinite(float(new_lower))
 
-        if sym != "none":
-            # Gang-move: all three shift by the same dy, preserving CI offsets.
-            new_y += dy
-            if new_upper is not None and np.isfinite(float(new_upper)):
-                new_upper = float(new_upper) + dy
-            if new_lower is not None and np.isfinite(float(new_lower)):
-                new_lower = float(new_lower) + dy
+        if is_forest:
+            # Interval runs horizontally and rows are fixed: left/right moves the
+            # value axis; the row (y) never changes.
+            delta = dx
+            if sym != "none":
+                new_x += delta
+                if _u_ok:
+                    new_upper = float(new_upper) + delta
+                if _l_ok:
+                    new_lower = float(new_lower) + delta
+            elif part == "upper":
+                new_upper = (float(new_upper) if _u_ok else float(pt.x)) + delta
+            elif part == "lower":
+                new_lower = (float(new_lower) if _l_ok else float(pt.x)) + delta
+            else:  # center
+                new_x += delta
         else:
-            if part == "center":
+            new_x += dx
+            if sym != "none":
+                # Gang-move: all three shift by the same dy, preserving CI offsets.
+                new_y += dy
+                if _u_ok:
+                    new_upper = float(new_upper) + dy
+                if _l_ok:
+                    new_lower = float(new_lower) + dy
+            elif part == "center":
                 new_y += dy
             elif part == "upper":
-                if new_upper is not None and np.isfinite(float(new_upper)):
-                    new_upper = float(new_upper) + dy
-                else:
-                    new_upper = float(pt.y) + dy
+                new_upper = (float(new_upper) if _u_ok else float(pt.y)) + dy
             elif part == "lower":
-                if new_lower is not None and np.isfinite(float(new_lower)):
-                    new_lower = float(new_lower) + dy
-                else:
-                    new_lower = float(pt.y) + dy
+                new_lower = (float(new_lower) if _l_ok else float(pt.y)) + dy
 
         try:
             fs.overlay.edit_point(pid, new_x, new_y)
@@ -1640,6 +1729,21 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # every drag — values then flow via ui.update_numeric instead.
         with reactive.isolate():
             a = anchors_rv()
+        fs = pv.state.files.get(fid)
+        is_forest = fs is not None and fs.plot_type == "forest"
+        # In forest mode the vertical axis is the categorical row index. As a
+        # convenience, seed data-Y with the full row span (top = N-1, bottom =
+        # 0) when the anchors are still at their generic defaults — but the
+        # fields stay editable so the user can anchor any two rows they like.
+        if (is_forest and fs.csv_df is not None
+                and a.p3_data_y == 1.0 and a.p1_data_y == 0.0):
+            n_rows = len(fs.csv_df)
+            p1_top_y = float(n_rows - 1)
+            p2_bottom_y = 0.0
+        else:
+            p1_top_y = float(a.p3_data_y)
+            p2_bottom_y = float(a.p1_data_y)
+        _y_label = "data Y"
         # Displayed P1 = top-left (internal p3); displayed P2 = bottom-right (internal p2).
         # Internal p1 (bottom-left) is derived as (p3.x, p2.y) and never shown.
         return ui.TagList(
@@ -1653,8 +1757,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             ui.row(
                 ui.column(6, ui.input_numeric("p1_data_x", "data X",
                                               value=float(a.p1_data_x))),
-                ui.column(6, ui.input_numeric("p3_data_y", "data Y",
-                                              value=float(a.p3_data_y))),
+                ui.column(6, ui.input_numeric("p3_data_y", _y_label,
+                                              value=p1_top_y)),
             ),
             ui.tags.strong("P2"),
             ui.row(
@@ -1666,9 +1770,17 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             ui.row(
                 ui.column(6, ui.input_numeric("p2_data_x", "data X",
                                               value=float(a.p2_data_x))),
-                ui.column(6, ui.input_numeric("p1_data_y", "data Y",
-                                              value=float(a.p1_data_y))),
+                ui.column(6, ui.input_numeric("p1_data_y", _y_label,
+                                              value=p2_bottom_y)),
             ),
+            ui.tags.small(
+                "Forest mode: data X is the value axis (P1 = left endpoint, "
+                "P2 = right endpoint). Data Y is the row index — put P1 on any "
+                "row and enter its index, P2 on any other row and enter its "
+                "index (top CSV row = N-1, bottom row = 0). Rows in between are "
+                "spaced evenly between the two anchors.",
+                style="color:#666;",
+            ) if is_forest else None,
             ui.hr(),
             ui.row(
                 ui.column(6,
@@ -1819,21 +1931,44 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
         edited_ids = {p.point_id for p in fs.overlay.points() if p.edited}
         df = fs.overlay.to_dataframe()
+        is_forest = fs.plot_type == "forest"
         visibility: dict[str, bool] = {}
         mask_active: dict[str, bool] = {}
-        for name in df["series"].drop_duplicates().tolist():
+        if is_forest:
+            # EditableOverlay.to_dataframe() drops the static forest metadata;
+            # re-attach it positionally (row order is preserved 1:1 with csv_df).
+            if fs.csv_df is not None and len(df) == len(fs.csv_df):
+                if "is_summary" in fs.csv_df.columns:
+                    df["is_summary"] = fs.csv_df["is_summary"].to_numpy()
+                if "status" in fs.csv_df.columns:
+                    df["status"] = fs.csv_df["status"].to_numpy()
+            # A single compact control drives every row.
+            vis_all = _safe_bool(lambda: input.forest_vis(), True)
+            mask_all = _safe_bool(lambda: input.forest_mask(), False)
             try:
-                visibility[name] = bool(input[_vis_id(name)]())
-            except Exception as exc:
-                _trace("overlay_plot.visibility_read_error",
-                       series=name, error=repr(exc))
-                visibility[name] = True
-            try:
-                mask_active[name] = bool(input[_mask_id(name)]())
+                de_all = int(input.forest_de())
             except Exception:
-                mask_active[name] = False
+                de_all = DEFAULT_DELTA_E
+            names = df["series"].drop_duplicates().tolist()
+            visibility = {n: vis_all for n in names}
+            mask_active = {n: mask_all for n in names}
+            for n in names:
+                fs.series_delta_e[n] = de_all
+        else:
+            for name in df["series"].drop_duplicates().tolist():
+                try:
+                    visibility[name] = bool(input[_vis_id(name)]())
+                except Exception as exc:
+                    _trace("overlay_plot.visibility_read_error",
+                           series=name, error=repr(exc))
+                    visibility[name] = True
+                try:
+                    mask_active[name] = bool(input[_mask_id(name)]())
+                except Exception:
+                    mask_active[name] = False
         traces = build_overlay_traces(df, series_visibility=visibility,
-                                       series_colors=fs.series_color_overrides)
+                                       series_colors=fs.series_color_overrides,
+                                       plot_type=fs.plot_type)
 
         mask_specs = _compute_mask_specs(fs, df, mask_active)
 
@@ -1880,17 +2015,23 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # same composite the user is comparing against.
         bubble_uri = _get_image_uri(fid)
         if fs.csv_df is not None:
+            names = fs.csv_df["series"].drop_duplicates().tolist()
             mask_active: dict[str, bool] = {}
-            for name in fs.csv_df["series"].drop_duplicates().tolist():
-                try:
-                    mask_active[name] = bool(input[_mask_id(name)]())
-                except Exception:
-                    mask_active[name] = False
+            if fs.plot_type == "forest":
+                mask_all = _safe_bool(lambda: input.forest_mask(), False)
+                mask_active = {n: mask_all for n in names}
+            else:
+                for name in names:
+                    try:
+                        mask_active[name] = bool(input[_mask_id(name)]())
+                    except Exception:
+                        mask_active[name] = False
             mask_specs = _compute_mask_specs(fs, fs.csv_df, mask_active)
             bubble_uri = _get_masked_image_uri(fid, mask_specs)
         fig = build_zoom_bubble_figure(
             fs.image_rgb, cal, pt, part,
             image_data_uri=bubble_uri,
+            plot_type=fs.plot_type,
         )
         widget = go.FigureWidget(fig)
         try:
@@ -1913,6 +2054,27 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         fs = pv.state.files.get(fid) if fid is not None else None
         if fs is None or fs.csv_df is None:
             return ui.tags.em("Load a CSV to toggle series visibility.")
+        if fs.plot_type == "forest":
+            # One compact control drives all rows: a forest CSV can carry
+            # dozens of rows, so 50 per-row widgets would be unusable.
+            n_rows = len(fs.csv_df["series"].drop_duplicates())
+            de_val = DEFAULT_DELTA_E
+            for name in fs.csv_df["series"].drop_duplicates().tolist():
+                de_val = fs.series_delta_e.get(name, DEFAULT_DELTA_E)
+                break
+            return ui.div(
+                ui.div(
+                    ui.tags.strong("All rows"),
+                    ui.tags.span(f" ({n_rows})",
+                                 style="color:#888;font-size:12px;"),
+                    style="margin-bottom:6px;",
+                ),
+                ui.input_checkbox("forest_vis", "Show overlay", value=True),
+                ui.input_checkbox("forest_mask", "Mask source colors",
+                                  value=False),
+                ui.input_slider("forest_de", "ΔE threshold",
+                                min=1, max=40, value=int(de_val), step=1),
+            )
         header = ui.div(
             ui.div("", style="flex:1 1 auto;"),
             ui.div("Overlay", style="width:60px;text-align:center;font-size:11px;color:#555;"),
@@ -1995,6 +2157,79 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                     class_="table table-sm table-striped",
                 ),
                 style="margin-top:12px;",
+            )
+
+        if fs.plot_type == "forest":
+            # Value-as-estimate: the σ machinery treats the interval as
+            # bracketing the estimate, which in forest mode lives in `x`.
+            # Default to the raw view ("None") until the user picks a real type.
+            eff = fs.effective_error_bar_type
+            default_eb = eff if eff in VALID_ERROR_TYPES else "None"
+            try:
+                eb_type = input.forest_eb_type() or default_eb
+            except Exception:
+                eb_type = default_eb
+            try:
+                percent = float(input.forest_eb_percent() or fs.error_bar_percent)
+            except Exception:
+                percent = fs.error_bar_percent
+            n_shared = _safe_int(lambda: input.forest_n(), 0, "forest_n") or None
+
+            eb_arg = eb_type if eb_type in VALID_ERROR_TYPES else None
+            cal = cal_dict_from_result(fs.detection_result)
+            display_df = build_forest_display_df(
+                df, eb_arg, percent, n_shared, cal.get("x_log_base")
+            )
+
+            needs_percent = eb_type in ("Confidence", "Prediction")
+            needs_n = eb_type in ("Confidence", "Prediction", "SE")
+            top_items = [
+                ui.div(
+                    ui.input_select(
+                        "forest_eb_type", "Error bar type",
+                        {"None": "None (raw)",
+                         **{t: t for t in VALID_ERROR_TYPES}},
+                        selected=eb_type,
+                    ),
+                    style="flex:0 0 auto;",
+                ),
+            ]
+            if needs_percent:
+                top_items.append(ui.div(
+                    ui.input_numeric("forest_eb_percent", "Percent",
+                                     value=percent, min=50, max=99.9, step=0.5),
+                    style="flex:0 0 auto;width:110px;",
+                ))
+            if needs_n:
+                top_items.append(ui.div(
+                    ui.input_numeric("forest_n", "n (per row)",
+                                     value=n_shared, min=2, step=1),
+                    style="flex:0 0 auto;width:120px;",
+                ))
+            controls = ui.div(
+                *top_items,
+                style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;",
+            )
+            if display_df.empty:
+                table_ui = ui.tags.em("No forest data available.")
+            else:
+                html_str = display_df.to_html(
+                    classes=["table", "table-sm", "table-striped", "table-bordered"],
+                    float_format=lambda x: f"{x:.4g}",
+                    na_rep="—",
+                    border=0,
+                    index=False,
+                )
+                table_ui = ui.div(
+                    ui.HTML(html_str),
+                    style="overflow-x:auto;font-size:13px;width:100%;",
+                )
+            return ui.card(
+                ui.card_header("Forest estimates"),
+                controls,
+                ui.hr(),
+                table_ui,
+                style="margin-top:12px;overflow:visible;",
             )
 
         # ---- Time series dashboard ----
@@ -2326,6 +2561,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             cur_step = _safe_float(input.overlay_arrow_step,
                                     _pixel_step_for_file(fs), "overlay_arrow_step")
             cur_sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
+        # Forest y is the fixed row index; editing it would break the even
+        # row spacing, so the field is labelled locked and ignored on Apply.
+        is_forest = fs.plot_type == "forest"
+        y_label = "y (row, locked)" if is_forest else "y"
         return ui.div(
             ui.output_ui("overlay_selection_status"),
             ui.input_select("edit_point_id", "Point", choices=ids,
@@ -2333,7 +2572,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             ui.row(
                 ui.column(6, ui.input_numeric("edit_point_x", "x",
                                                value=init_x)),
-                ui.column(6, ui.input_numeric("edit_point_y", "y",
+                ui.column(6, ui.input_numeric("edit_point_y", y_label,
                                                value=init_y)),
             ),
             ui.row(
@@ -2403,6 +2642,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             new_y = float(input.edit_point_y() or 0)
             new_upper = float(input.edit_err_upper() or 0)
             new_lower = float(input.edit_err_lower() or 0)
+            if fs.plot_type == "forest":
+                # Row index is fixed — keep the point on its evenly-spaced row.
+                cur_pt = next((p for p in fs.overlay.points()
+                               if p.point_id == pid), None)
+                if cur_pt is not None:
+                    new_y = float(cur_pt.y)
             sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
             new_x, new_y, new_upper, new_lower = _apply_symmetry(
                 new_x, new_y, new_upper, new_lower, sym)

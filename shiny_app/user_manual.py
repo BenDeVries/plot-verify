@@ -321,6 +321,108 @@ def _plot_type() -> ui.Tag:
                 " — points only, no connecting line. Dashboard shows "
                 "Pearson r and R² per series and overall.",
             ),
+            ui.TagList(
+                ui.tags.strong("Forest plot"),
+                " — one horizontal row per estimate with a horizontal "
+                "confidence interval and a categorical vertical axis. "
+                "Auto-selected when a forest CSV is loaded. See the ",
+                ui.tags.em("Forest plots"), " section below.",
+            ),
+        ),
+    )
+
+
+def _forest_plots() -> ui.Tag:
+    return _section(
+        "Forest plots",
+        "forest_plots",
+        _p("A forest plot lays out one estimate per horizontal row: each row "
+           "has a point estimate, a horizontal confidence interval, and a "
+           "categorical label on the vertical axis. PlotVerify auto-detects "
+           "this layout and switches Plot type to Forest plot."),
+        ui.tags.p(ui.tags.strong("CSV schema:"),
+                  style="margin:8px 0 4px 0;"),
+        _ul(
+            ui.TagList(
+                "Detected when the CSV has a ", _code("value"),
+                " column and no ", _code("x"), " column. ",
+                _code("value"), " → the estimate, ",
+                _code("value_err_lower"), " / ", _code("value_err_upper"),
+                " → the interval bounds.",
+            ),
+            ui.TagList(
+                "The ", _code("series"), " column is the row label "
+                "(e.g. ", _code("beta[0]"), "). Rows are placed top-to-bottom "
+                "in CSV order — the first CSV row sits at the top.",
+            ),
+            ui.TagList(
+                "Optional ", _code("is_summary"),
+                " (bool) renders that row as a diamond marker; ",
+                _code("status"),
+                " (text) is appended to the point's hover label.",
+            ),
+        ),
+        ui.tags.p(ui.tags.strong("Calibration — what to enter:"),
+                  style="margin:8px 0 4px 0;"),
+        _ul(
+            ui.TagList(
+                ui.tags.strong("data X"), " is the value axis. Set ",
+                _code("P1 data X"), " to the value at P1's horizontal "
+                "position (the left value gridline) and ", _code("P2 data X"),
+                " to the value at P2 (the right value gridline).",
+            ),
+            ui.TagList(
+                ui.tags.strong("data Y"), " is the row index. Rows are "
+                "numbered so the top CSV row = ", _code("N-1"),
+                " and the bottom row = ", _code("0"),
+                " (N = number of rows). Place P1 on any row and enter that "
+                "row's index as ", _code("P1 data Y"),
+                "; place P2 on any other row and enter its index as ",
+                _code("P2 data Y"), ".",
+            ),
+            "The two anchors do not have to be the very top and bottom rows — "
+            "pick whichever two rows are easiest to line up. The remaining "
+            "rows are spaced evenly between them by the linear y-calibration. "
+            "As a convenience the data-Y fields are pre-filled with the full "
+            "span (N-1 and 0), but you can change them. Click Apply when set.",
+        ),
+        ui.tags.p(ui.tags.strong("Overlay:"),
+                  style="margin:8px 0 4px 0;"),
+        _ul(
+            "Each row draws a marker with a horizontal error bar and a "
+            "low-opacity interval band. Because a forest CSV can carry dozens "
+            "of rows, the Series panel collapses to a single compact control: "
+            "one Show-overlay toggle, one Mask toggle, and one ΔE slider that "
+            "apply to every row at once.",
+            ui.TagList(
+                "Click a marker to select its center, or click the left/right "
+                "cap to select the lower/upper interval endpoint. Arrow keys "
+                "then nudge the selection horizontally (Shift = 10×); you can "
+                "also type exact values into ", _code("x"), ", ",
+                _code("y_err_lower"), " and ", _code("y_err_upper"),
+                " and click Apply.",
+            ),
+            ui.TagList(
+                "The ", _code("y"),
+                " field is the fixed row index and is locked, so editing only "
+                "moves values along the horizontal axis and rows stay evenly "
+                "spaced.",
+            ),
+        ),
+        ui.tags.p(ui.tags.strong("Dashboard:"),
+                  style="margin:8px 0 4px 0;"),
+        _ul(
+            "One row per estimate: label, estimate, CI lower/upper, and the "
+            "interval half-width. A Status column appears when any row has a "
+            "status note.",
+            ui.TagList(
+                "Set an ", _code("Error bar type"),
+                " (SD / SE / Confidence / Prediction) and, where required, a "
+                "shared ", _code("n"), " to add a σ column, computed with "
+                "the same half-width→σ machinery as the time-series "
+                "dashboard. Leave the type on ", _code("None (raw)"),
+                " to show only the raw estimates and intervals.",
+            ),
         ),
     )
 
@@ -725,6 +827,7 @@ def user_manual_tab() -> ui.Tag:
         _export(),
         _dashboard_scatter(),
         _dashboard_time_series(),
+        _forest_plots(),
         _keyboard_shortcuts(),
         _troubleshooting(),
     ])

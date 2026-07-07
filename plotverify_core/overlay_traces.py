@@ -36,6 +36,11 @@ class OverlayTrace:
     # Global point IDs matching EditableOverlay (e.g. "SeriesA#3"). Index is
     # the global DataFrame row position, not a series-local index.
     point_ids: List[str] = field(default_factory=list)
+    # Forest-plot metadata (one entry per point). ``is_summary`` selects a
+    # diamond marker; ``status`` is surfaced in the hover text. Both are None
+    # for time-series / scatter traces.
+    is_summary: Optional[np.ndarray] = None
+    status: Optional[List[str]] = None
 
 
 def build_overlay_traces(
@@ -43,14 +48,21 @@ def build_overlay_traces(
     *,
     series_visibility: Optional[Dict[str, bool]] = None,
     series_colors: Optional[Dict[str, str]] = None,
+    plot_type: str = "time_series",
 ) -> List[OverlayTrace]:
     """Build traces for every distinct series in ``df``.
 
     ``series_visibility`` defaults to True for every series; ``series_colors``
     overrides the per-series CSV color. Series with no rows are skipped.
+
+    In forest mode (``plot_type == "forest"``) the interval brackets the value
+    axis ``x`` rather than ``y``, so the error offsets are measured from ``x``
+    and no vertical ribbon is built; ``is_summary``/``status`` are carried
+    through for the renderer.
     """
     series_visibility = series_visibility or {}
     series_colors = series_colors or {}
+    is_forest = plot_type == "forest"
 
     traces: List[OverlayTrace] = []
     for series_name in df["series"].drop_duplicates().tolist():
@@ -77,10 +89,13 @@ def build_overlay_traces(
         el = sdf["y_err_lower"].to_numpy(dtype=float) if "y_err_lower" in sdf.columns else np.full(len(sdf), np.nan)
         has_err = np.isfinite(eu) & np.isfinite(el)
 
-        err_plus = np.where(has_err, eu - y, 0.0)
-        err_minus = np.where(has_err, y - el, 0.0)
+        # The interval brackets the value axis: `x` in forest mode, else `y`.
+        base = x if is_forest else y
+        err_plus = np.where(has_err, eu - base, 0.0)
+        err_minus = np.where(has_err, base - el, 0.0)
 
-        if has_err.any():
+        # A vertical ribbon fill only makes sense with a numeric y-axis.
+        if has_err.any() and not is_forest:
             x_rib = x[has_err]
             y_upper = eu[has_err]
             y_lower = el[has_err]
@@ -92,6 +107,19 @@ def build_overlay_traces(
             x_rib = np.array([], dtype=float)
             y_upper = np.array([], dtype=float)
             y_lower = np.array([], dtype=float)
+
+        if is_forest:
+            is_summary_arr = (
+                sdf["is_summary"].to_numpy(dtype=bool)
+                if "is_summary" in sdf.columns else np.zeros(len(sdf), dtype=bool)
+            )
+            status_arr = (
+                [str(s) for s in sdf["status"].tolist()]
+                if "status" in sdf.columns else ["" for _ in range(len(sdf))]
+            )
+        else:
+            is_summary_arr = None
+            status_arr = None
 
         traces.append(OverlayTrace(
             series=str(series_name),
@@ -106,6 +134,8 @@ def build_overlay_traces(
             marker_color_hex=marker_hex,
             visible=bool(series_visibility.get(series_name, True)),
             point_ids=point_ids,
+            is_summary=is_summary_arr,
+            status=status_arr,
         ))
 
     return traces
