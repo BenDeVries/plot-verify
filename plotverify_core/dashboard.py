@@ -255,6 +255,77 @@ def build_time_series_display_df(
     )
 
 
+def build_forest_display_df(
+    df: pd.DataFrame,
+    eb_type: Optional[str] = None,
+    percent: float = 95.0,
+    n: Optional[int] = None,
+    log_base: Optional[float] = None,
+) -> pd.DataFrame:
+    """One row per forest row: label, estimate, CI bounds, half-width, σ, status.
+
+    A forest CSV stores each row as a distinct series (the row label) with the
+    point estimate in ``x`` and the interval bounds in ``y_err_lower`` /
+    ``y_err_upper`` bracketing ``x`` (not ``y``, which is the row index). That
+    layout is the opposite of a time series, so this builds a long-format table
+    (one row per forest row) rather than the series-pivoted wide table that
+    ``build_time_series_display_df`` produces.
+
+    The σ column is only emitted when ``eb_type`` is a real interval type
+    (``VALID_ERROR_TYPES``); otherwise the raw estimate + interval is shown. The
+    same ``_sd_from_half_width`` machinery as the time-series dashboard drives
+    the conversion, so a shared ``n`` applies to every row.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    alpha = 1.0 - percent / 100.0
+    base = _resolve_log_base(log_base)
+    ln_base = math.log(base) if base is not None else 1.0
+
+    labels = df["series"].astype(str).tolist()
+    est = pd.to_numeric(df["x"], errors="coerce").to_numpy()
+    lower = pd.to_numeric(df["y_err_lower"], errors="coerce").to_numpy()
+    upper = pd.to_numeric(df["y_err_upper"], errors="coerce").to_numpy()
+
+    if base is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            half_w = np.where(
+                (est > 0) & (lower > 0) & (upper > 0),
+                (np.log(upper) - np.log(lower)) / (2.0 * ln_base),
+                np.nan,
+            )
+    else:
+        half_w = np.where(
+            np.isfinite(lower) & np.isfinite(upper),
+            (upper - lower) / 2.0,
+            np.nan,
+        )
+
+    out: dict = {
+        "Row": labels,
+        "Estimate": est,
+        "CI lower": lower,
+        "CI upper": upper,
+        "Half-width": half_w,
+    }
+
+    if eb_type in VALID_ERROR_TYPES:
+        sd = _sd_from_half_width(half_w, eb_type, percent, alpha, n)
+        if base is not None:
+            out["σ_log"] = sd
+            out["σ"] = np.where(np.isfinite(sd), np.power(base, sd), np.nan)
+        else:
+            out["σ"] = sd
+
+    if "status" in df.columns:
+        status = df["status"].fillna("").astype(str).tolist()
+        if any(s.strip() for s in status):
+            out["Status"] = status
+
+    return pd.DataFrame(out)
+
+
 def compute_scatter_stats(df: pd.DataFrame) -> dict:
     """Pearson correlation per series and overall.
 

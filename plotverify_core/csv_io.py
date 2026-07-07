@@ -18,6 +18,17 @@ from .colors import FALLBACK_HEX, assign_palette_colors, is_valid_hex
 REQUIRED_COLUMNS = ["x", "y"]
 OPTIONAL_ERROR_COLUMNS = ["y_err_lower", "y_err_upper"]
 
+# A forest-plot CSV describes one horizontal row per series: a point estimate
+# (`value`) with a horizontal confidence interval (`value_err_*`) and a
+# categorical vertical axis. We normalise it onto the canonical x/y/y_err
+# columns so the overlay model, editor, export and dashboard keep working —
+# in forest mode `x` holds the value and `y_err_*` bracket `x` (see load_csv).
+FOREST_COLUMN_MAP = {
+    "value": "x",
+    "value_err_lower": "y_err_lower",
+    "value_err_upper": "y_err_upper",
+}
+
 
 @dataclass
 class LoadReport:
@@ -31,6 +42,19 @@ class LoadReport:
     reversed_samples: List[Tuple[str, float]] = field(default_factory=list)
     has_series_color_column: bool = False
     error_bar_type: Optional[str] = None
+    is_forest: bool = False
+
+
+def _looks_like_forest(df: pd.DataFrame) -> bool:
+    """A forest CSV carries `value` (the estimate) and no explicit `x` column."""
+    return "value" in df.columns and "x" not in df.columns
+
+
+def _coerce_bool(series: pd.Series) -> pd.Series:
+    """Coerce a CSV column of "true"/"false"-ish strings into real booleans."""
+    return series.map(
+        lambda v: str(v).strip().lower() in ("true", "1", "yes", "t")
+    )
 
 
 def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
@@ -53,7 +77,15 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
         report.error = f"Failed to parse CSV: {e}"
         return None, report
 
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    is_forest = _looks_like_forest(df)
+    report.is_forest = is_forest
+    if is_forest:
+        df = df.rename(columns=FOREST_COLUMN_MAP)
+
+    # Forest CSVs have no `y` column — the vertical axis is a categorical row
+    # index synthesised below, so only `x` (the value) is required from disk.
+    required = ["x"] if is_forest else REQUIRED_COLUMNS
+    missing = [c for c in required if c not in df.columns]
     if missing:
         report.error = f"CSV is missing required columns: {missing}"
         return None, report
@@ -75,16 +107,37 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
             df[col] = pd.NA
 
     df["x"] = pd.to_numeric(df["x"], errors="coerce")
-    df["y"] = pd.to_numeric(df["y"], errors="coerce")
     df["y_err_lower"] = pd.to_numeric(df["y_err_lower"], errors="coerce")
     df["y_err_upper"] = pd.to_numeric(df["y_err_upper"], errors="coerce")
 
-    n_before = len(df)
-    df = df.dropna(subset=["x", "y"]).reset_index(drop=True)
-    report.n_rows_dropped_missing_xy = n_before - len(df)
+    if is_forest:
+        # Drop rows with no value, then place each remaining row on the
+        # categorical vertical axis: `y` is a row index assigned top→bottom in
+        # CSV order (first CSV row sits at the top with the largest index). The
+        # even spacing is realised later by the linear y-calibration.
+        n_before = len(df)
+        df = df.dropna(subset=["x"]).reset_index(drop=True)
+        report.n_rows_dropped_missing_xy = n_before - len(df)
+        n = len(df)
+        df["y"] = [float(n - 1 - i) for i in range(n)]
+        if "is_summary" in df.columns:
+            df["is_summary"] = _coerce_bool(df["is_summary"])
+        else:
+            df["is_summary"] = False
+        if "status" in df.columns:
+            df["status"] = df["status"].fillna("").astype(str)
+        else:
+            df["status"] = ""
+    else:
+        df["y"] = pd.to_numeric(df["y"], errors="coerce")
+        n_before = len(df)
+        df = df.dropna(subset=["x", "y"]).reset_index(drop=True)
+        report.n_rows_dropped_missing_xy = n_before - len(df)
+
     if report.n_rows_dropped_missing_xy > 0:
         report.warnings.append(
-            f"Dropped {report.n_rows_dropped_missing_xy} row(s) with missing x or y."
+            f"Dropped {report.n_rows_dropped_missing_xy} row(s) with missing "
+            + ("value." if is_forest else "x or y.")
         )
 
     df["series"] = df["series"].astype(str)
@@ -108,12 +161,13 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
             raw = str(non_null.iloc[0]).strip()
             report.error_bar_type = raw.title() if raw else None
 
-    # Reversed error bars: convention is lower ≤ y ≤ upper.
+    # Reversed error bars: the interval must bracket the point estimate. For a
+    # forest plot the estimate is `x` (the value); otherwise it is `y`.
     eu = df["y_err_upper"]
     el = df["y_err_lower"]
-    y = df["y"]
-    finite_both = eu.notna() & el.notna() & y.notna()
-    reversed_mask = finite_both & ((el > y) | (eu < y))
+    point = df["x"] if is_forest else df["y"]
+    finite_both = eu.notna() & el.notna() & point.notna()
+    reversed_mask = finite_both & ((el > point) | (eu < point))
     report.n_reversed_error_bars = int(reversed_mask.sum())
     if report.n_reversed_error_bars > 0:
         sample = df.loc[reversed_mask, ["series", "x"]].head(5)
