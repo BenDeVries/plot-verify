@@ -276,7 +276,7 @@ class PlotVerifyApp:
         import failed entirely; otherwise partial imports are allowed
         (e.g. image + calibration but no rows).
         """
-        from .json_io import JsonLoadResult, parse_agent_json
+        from .json_io import JsonLoadResult, parse_agent_json, rescale_anchors
 
         result = parse_agent_json(json_text)
         if result.error:
@@ -293,11 +293,34 @@ class PlotVerifyApp:
             result.image_bytes,
             downscale=True,
         )
+        fs = self.state.files[file_id]
+
+        # The JSON's pixel anchors refer to the image as the agent saw it.
+        # If our decoded copy has a different width (auto-downscale of large
+        # images, or a JSON written against different dimensions), rescale
+        # the anchors so the calibration still lands on the right pixels.
+        if result.anchors is not None and fs.image_rgb is not None:
+            decoded_w = fs.image_rgb.shape[1]
+            declared_w = result.image_width
+            scale = 1.0
+            if declared_w and declared_w != decoded_w:
+                scale = decoded_w / float(declared_w)
+                pre_downscale_w = decoded_w / fs.image_downscale_factor
+                if abs(float(declared_w) - pre_downscale_w) > 1.5:
+                    result.warnings.append(
+                        f"JSON declares image width {declared_w}px but the "
+                        f"decoded image is {decoded_w}px wide; calibration "
+                        f"anchors rescaled by {scale:.4f}."
+                    )
+            elif fs.image_downscale_factor != 1.0:
+                scale = fs.image_downscale_factor
+            if scale != 1.0:
+                result.anchors = rescale_anchors(result.anchors, scale)
 
         if result.anchors is not None:
             self.apply_manual_calibration(file_id, result.anchors)
 
-        fs = self.state.files[file_id]
+        fs.orientation = result.orientation or "vertical"
 
         if result.csv_df is not None:
             report = result.csv_report

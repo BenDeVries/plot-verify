@@ -51,7 +51,7 @@ from .masking import apply_color_mask, delta_e_mask
 from .matching import FileEntry, MatchResult, make_file_entry, match_files
 from .overlay_image import build_masked_overlay_image
 from .overlay_model import EditableOverlay, OverlayPoint
-from .overlay_traces import OverlayTrace, build_overlay_traces
+from .overlay_traces import OverlayTrace, build_overlay_traces, is_horizontal_layout
 from .serialization import SCHEMA_VERSION, load_session, save_session
 from .series_state import SeriesState, init_series_states
 from .session import (
@@ -76,6 +76,7 @@ __all__ = [
     "MatchResult",
     "OverlayPoint",
     "OverlayTrace",
+    "is_horizontal_layout",
     "PerFileState",
     "PlotVerifyApp",
     "ReviewStatus",

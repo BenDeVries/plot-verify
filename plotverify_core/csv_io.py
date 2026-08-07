@@ -58,12 +58,16 @@ def _coerce_bool(series: pd.Series) -> pd.Series:
 
 
 def validate_and_normalize(
-    df: pd.DataFrame, *, is_forest: bool = False,
+    df: pd.DataFrame, *, is_forest: bool = False, horizontal: bool = False,
 ) -> Tuple[Optional[pd.DataFrame], LoadReport]:
     """Validate and normalize a DataFrame with series/x/y/err columns.
 
     Shared by ``load_csv`` (from CSV text) and ``json_io`` (from JSON rows).
     Returns ``(df, report)``; when ``df is None``, ``report.error`` explains why.
+
+    ``horizontal=True`` marks a horizontal bar/box layout where the value
+    lives in ``x`` and ``y_err_*`` bracket ``x`` (forest implies this without
+    the flag). Unlike forest mode, ``y`` remains a required column.
     """
     report = LoadReport()
     report.is_forest = is_forest
@@ -142,7 +146,7 @@ def validate_and_normalize(
 
     eu = df["y_err_upper"]
     el = df["y_err_lower"]
-    point = df["x"] if is_forest else df["y"]
+    point = df["x"] if (is_forest or horizontal) else df["y"]
     finite_both = eu.notna() & el.notna() & point.notna()
     reversed_mask = finite_both & ((el > point) | (eu < point))
     report.n_reversed_error_bars = int(reversed_mask.sum())

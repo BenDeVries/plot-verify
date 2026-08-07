@@ -238,3 +238,147 @@ def test_status_defaults_when_missing():
     out, _ = validate_and_normalize(df, is_forest=False)
     assert "status" in out.columns
     assert out["status"].iloc[0] == ""
+
+
+# ---------------------------------------------------------------------------
+# Horizontal orientation (schema 1.1)
+# ---------------------------------------------------------------------------
+
+_HBAR_ROWS = [
+    {"series": "Control", "x": 5.0, "y": 1, "y_err_lower": 3.0,
+     "y_err_upper": 7.0, "series_color": "#ff0000"},
+    {"series": "Control", "x": 8.0, "y": 2, "y_err_lower": 6.0,
+     "y_err_upper": 10.0, "series_color": "#ff0000"},
+]
+
+_HBOX_ROWS = [
+    {"series": "Group A", "x": 5.0, "y": 1,
+     "y_err_lower": 1.0, "y_err_upper": 9.0,
+     "box_q1": 3.0, "box_median": 5.0, "box_q3": 7.0,
+     "status": "", "series_color": "#ff0000"},
+]
+
+
+def _wrap_horizontal(plot_type, rows):
+    doc = json.loads(_wrap_json(plot_type, rows))
+    doc["orientation"] = "horizontal"
+    return json.dumps(doc)
+
+
+def test_is_horizontal_layout_predicate():
+    from plotverify_core import is_horizontal_layout
+
+    assert is_horizontal_layout("forest")
+    assert is_horizontal_layout("forest", "vertical")
+    assert is_horizontal_layout("bar", "horizontal")
+    assert is_horizontal_layout("box", "horizontal")
+    assert not is_horizontal_layout("bar")
+    assert not is_horizontal_layout("scatter", "horizontal")
+    assert not is_horizontal_layout("time_series", "horizontal")
+
+
+def test_horizontal_bar_errors_bracket_x():
+    result = parse_agent_json(_wrap_horizontal("bar", _HBAR_ROWS))
+    assert result.orientation == "horizontal"
+    traces = build_overlay_traces(result.csv_df, plot_type="bar",
+                                  orientation="horizontal")
+    ctrl = next(t for t in traces if t.series == "Control")
+    # x = 5, bounds [3, 7] -> offsets measured from x, not y
+    np.testing.assert_allclose(ctrl.err_array_plus, [2.0, 2.0])
+    np.testing.assert_allclose(ctrl.err_array_minus, [2.0, 2.0])
+    assert ctrl.ribbon_x.size == 0
+
+
+def test_horizontal_bar_figure_uses_error_x():
+    from shiny_app.figures import build_data_overlay_figure
+
+    result = parse_agent_json(_wrap_horizontal("bar", _HBAR_ROWS))
+    traces = build_overlay_traces(result.csv_df, plot_type="bar",
+                                  orientation="horizontal")
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    cal = {"applied": True, "x_scale": 0.1, "x_offset": 0.0,
+           "y_scale": -1.0, "y_offset": 100.0,
+           "x_log_base": None, "y_log_base": None}
+    fig = build_data_overlay_figure(img, traces, cal, plot_type="bar",
+                                    orientation="horizontal")
+    main = next(t for t in fig.data if t.name == "Control")
+    assert main.error_x is not None and main.error_x.array is not None
+    assert main.error_y is None or main.error_y.array is None
+    cap_u = next(t for t in fig.data if t.name == "_pv_cap_u_Control")
+    assert cap_u.marker.symbol == "triangle-right"
+    # Upper cap sits at (bound, category): x=7, y=1 for the first row
+    assert float(cap_u.x[0]) == 7.0
+    assert float(cap_u.y[0]) == 1.0
+    sel_upper = next(t for t in fig.data if t.name == "_pv_sel_upper")
+    assert sel_upper.marker.symbol == "triangle-right-open"
+
+
+def test_vertical_bar_figure_unchanged():
+    from shiny_app.figures import build_data_overlay_figure
+
+    result = parse_agent_json(_wrap_json("bar", _BAR_ROWS))
+    traces = build_overlay_traces(result.csv_df, plot_type="bar")
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    cal = {"applied": True, "x_scale": 0.1, "x_offset": 0.0,
+           "y_scale": -1.0, "y_offset": 100.0,
+           "x_log_base": None, "y_log_base": None}
+    fig = build_data_overlay_figure(img, traces, cal, plot_type="bar")
+    main = next(t for t in fig.data if t.name == "Control")
+    assert main.error_y is not None and main.error_y.array is not None
+    assert main.error_x is None or main.error_x.array is None
+
+
+def test_horizontal_box_geometry():
+    from shiny_app.figures import build_data_overlay_figure
+
+    result = parse_agent_json(_wrap_horizontal("box", _HBOX_ROWS))
+    traces = build_overlay_traces(result.csv_df, plot_type="box",
+                                  orientation="horizontal")
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    cal = {"applied": True, "x_scale": 0.1, "x_offset": 0.0,
+           "y_scale": -1.0, "y_offset": 100.0,
+           "x_log_base": None, "y_log_base": None}
+    fig = build_data_overlay_figure(img, traces, cal, plot_type="box",
+                                    orientation="horizontal")
+    box = next(t for t in fig.data if t.name == "_pv_box_Group A")
+    xs = [v for v in box.x if v is not None]
+    ys = [v for v in box.y if v is not None]
+    # Value axis (x) spans q1..q3; category axis (y) spans cat +/- bw.
+    assert min(xs) == 3.0 and max(xs) == 7.0
+    assert min(ys) == 1 - 0.3 and max(ys) == 1 + 0.3
+    whisk = next(t for t in fig.data if t.name == "_pv_whisk_Group A")
+    wxs = [v for v in whisk.x if v is not None]
+    # Whiskers run along x out to the interval bounds [1, 9].
+    assert min(wxs) == 1.0 and max(wxs) == 9.0
+
+
+def test_vertical_box_geometry_unchanged():
+    from shiny_app.figures import build_data_overlay_figure
+
+    result = parse_agent_json(_wrap_json("box", _BOX_ROWS))
+    traces = build_overlay_traces(result.csv_df, plot_type="box")
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    cal = {"applied": True, "x_scale": 0.1, "x_offset": 0.0,
+           "y_scale": -1.0, "y_offset": 100.0,
+           "x_log_base": None, "y_log_base": None}
+    fig = build_data_overlay_figure(img, traces, cal, plot_type="box")
+    box = next(t for t in fig.data if t.name == "_pv_box_Group A")
+    ys = [v for v in box.y if v is not None]
+    xs = [v for v in box.x if v is not None]
+    assert min(ys) == 3.0 and max(ys) == 7.0
+    assert min(xs) == 1 - 0.3 and max(xs) == 1 + 0.3
+
+
+def test_overlay_figure_has_anchor_sentinel_trace():
+    from shiny_app.figures import build_data_overlay_figure
+
+    result = parse_agent_json(_wrap_json("bar", _BAR_ROWS))
+    traces = build_overlay_traces(result.csv_df, plot_type="bar")
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    cal = {"applied": True, "x_scale": 0.1, "x_offset": 0.0,
+           "y_scale": -1.0, "y_offset": 100.0,
+           "x_log_base": None, "y_log_base": None}
+    fig = build_data_overlay_figure(img, traces, cal, plot_type="bar")
+    names = {t.name for t in fig.data}
+    assert {"_pv_sel_center", "_pv_sel_upper", "_pv_sel_lower",
+            "_pv_sel_anchor"} <= names

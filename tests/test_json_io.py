@@ -390,7 +390,7 @@ def test_export_basic():
     )
     text = export_json(fs)
     doc = json.loads(text)
-    assert doc["schema_version"] == "1.0"
+    assert doc["schema_version"] == "1.1"
     assert doc["plot_type"] == "scatter"
     assert len(doc["rows"]) == 2
     assert doc["image"]["filename"] == "test.png"
@@ -496,5 +496,251 @@ def test_export_json_controller():
     data = pv.export_json(fid)
     assert isinstance(data, bytes)
     doc = json.loads(data.decode("utf-8"))
-    assert doc["schema_version"] == "1.0"
+    assert doc["schema_version"] == "1.1"
     assert len(doc["rows"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Orientation (schema 1.1)
+# ---------------------------------------------------------------------------
+
+def test_orientation_default_vertical():
+    result = parse_agent_json(_minimal_json())
+    assert result.orientation == "vertical"
+
+
+def test_orientation_horizontal_bar():
+    result = parse_agent_json(
+        _minimal_json(plot_type="bar", orientation="horizontal")
+    )
+    assert result.error is None
+    assert result.orientation == "horizontal"
+
+
+def test_orientation_horizontal_box():
+    result = parse_agent_json(
+        _minimal_json(plot_type="box", orientation="horizontal")
+    )
+    assert result.orientation == "horizontal"
+
+
+def test_orientation_unknown_warns():
+    result = parse_agent_json(_minimal_json(orientation="sideways"))
+    assert result.orientation == "vertical"
+    assert any("Unknown orientation" in w for w in result.warnings)
+
+
+def test_orientation_horizontal_scatter_warns_and_coerces():
+    result = parse_agent_json(
+        _minimal_json(plot_type="scatter", orientation="horizontal")
+    )
+    assert result.orientation == "vertical"
+    assert any("has no effect" in w for w in result.warnings)
+
+
+def test_orientation_forest_implicit_horizontal():
+    doc = json.loads(_minimal_json(plot_type="forest"))
+    doc["rows"] = [
+        {"series": "S", "value": 1.2, "value_err_lower": 0.9,
+         "value_err_upper": 1.6},
+        {"series": "S", "value": 0.8, "value_err_lower": 0.5,
+         "value_err_upper": 1.1},
+    ]
+    result = parse_agent_json(json.dumps(doc))
+    assert result.orientation == "horizontal"
+    # No orientation key present -> no warning either
+    assert not any("orientation" in w.lower() for w in result.warnings)
+
+
+def test_orientation_forest_explicit_vertical_warns():
+    doc = json.loads(_minimal_json(plot_type="forest", orientation="vertical"))
+    doc["rows"] = [
+        {"series": "S", "value": 1.2},
+        {"series": "S", "value": 0.8},
+    ]
+    result = parse_agent_json(json.dumps(doc))
+    assert result.orientation == "horizontal"
+    assert any("always horizontal" in w for w in result.warnings)
+
+
+def test_horizontal_bar_value_alias_maps_to_x():
+    doc = json.loads(_minimal_json(plot_type="bar", orientation="horizontal"))
+    doc["rows"] = [
+        {"series": "S", "value": 5.0, "y": 1.0,
+         "value_err_lower": 4.0, "value_err_upper": 6.0},
+        {"series": "S", "value": 3.0, "y": 2.0,
+         "value_err_lower": 2.5, "value_err_upper": 3.5},
+    ]
+    result = parse_agent_json(json.dumps(doc))
+    assert result.error is None
+    df = result.csv_df
+    assert df is not None
+    assert list(df["x"]) == [5.0, 3.0]
+    assert list(df["y"]) == [1.0, 2.0]
+    assert list(df["y_err_lower"]) == [4.0, 2.5]
+
+
+def test_horizontal_reversed_error_bars_swap_against_x():
+    doc = json.loads(_minimal_json(plot_type="bar", orientation="horizontal"))
+    doc["rows"] = [
+        # bounds bracket x=5 but reversed
+        {"series": "S", "x": 5.0, "y": 1.0,
+         "y_err_lower": 6.0, "y_err_upper": 4.0},
+    ]
+    result = parse_agent_json(json.dumps(doc))
+    df = result.csv_df
+    assert df is not None
+    assert float(df["y_err_lower"].iloc[0]) == 4.0
+    assert float(df["y_err_upper"].iloc[0]) == 6.0
+
+
+# ---------------------------------------------------------------------------
+# log_base (schema 1.1)
+# ---------------------------------------------------------------------------
+
+def _log_axes(x_base=None, y_base=None, x_scale="log", y_scale="log"):
+    axes = {
+        "x": {
+            "scale": x_scale,
+            "calibration": [
+                {"pixel": 100, "value": 1},
+                {"pixel": 700, "value": 100},
+            ],
+        },
+        "y": {
+            "scale": y_scale,
+            "calibration": [
+                {"pixel": 50, "value": 100},
+                {"pixel": 500, "value": 1},
+            ],
+        },
+    }
+    if x_base is not None:
+        axes["x"]["log_base"] = x_base
+    if y_base is not None:
+        axes["y"]["log_base"] = y_base
+    return axes
+
+
+def test_log_base_default_still_10():
+    result = parse_agent_json(_minimal_json(axes=_log_axes()))
+    assert result.anchors.x_log_base == 10.0
+    assert result.anchors.y_log_base == 10.0
+
+
+def test_log_base_explicit():
+    result = parse_agent_json(_minimal_json(axes=_log_axes(x_base=2, y_base=5)))
+    assert result.anchors.x_log_base == 2.0
+    assert result.anchors.y_log_base == 5.0
+
+
+def test_log_base_e_string():
+    result = parse_agent_json(_minimal_json(axes=_log_axes(y_base="e")))
+    assert result.anchors.y_log_base == pytest.approx(math.e)
+
+
+def test_log_base_invalid_falls_back_to_10_warns():
+    result = parse_agent_json(_minimal_json(axes=_log_axes(x_base=0.5)))
+    assert result.anchors.x_log_base == 10.0
+    assert any("Invalid axes.x.log_base" in w for w in result.warnings)
+
+    result = parse_agent_json(_minimal_json(axes=_log_axes(y_base="huge")))
+    assert result.anchors.y_log_base == 10.0
+    assert any("Invalid axes.y.log_base" in w for w in result.warnings)
+
+
+def test_log_base_with_linear_scale_ignored_warns():
+    axes = _log_axes(x_base=2, x_scale="linear", y_scale="linear")
+    result = parse_agent_json(_minimal_json(axes=axes))
+    assert result.anchors.x_log_base is None
+    assert any("log_base ignored" in w for w in result.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Anchor rescaling
+# ---------------------------------------------------------------------------
+
+def test_rescale_anchors_scales_pixels_only():
+    from plotverify_core.json_io import rescale_anchors
+
+    a = Anchors(
+        p1_pixel=(100.0, 500.0), p2_pixel=(700.0, 500.0),
+        p3_pixel=(100.0, 50.0),
+        p1_data_x=0.0, p2_data_x=24.0, p1_data_y=0.0, p3_data_y=100.0,
+        x_log_base=None, y_log_base=2.0,
+    )
+    b = rescale_anchors(a, 0.5)
+    assert b.p1_pixel == (50.0, 250.0)
+    assert b.p2_pixel == (350.0, 250.0)
+    assert b.p3_pixel == (50.0, 25.0)
+    assert b.p2_data_x == 24.0
+    assert b.y_log_base == 2.0
+    # original untouched
+    assert a.p1_pixel == (100.0, 500.0)
+
+
+def test_add_json_warns_on_dimension_mismatch():
+    """JSON declaring wrong image dims rescales anchors and warns."""
+    from plotverify_core.app import PlotVerifyApp
+
+    doc = json.loads(_minimal_json())
+    doc["image"]["width_px"] = 4  # real decoded PNG is 2 px wide
+    pv = PlotVerifyApp()
+    fid, result = pv.add_json(json.dumps(doc))
+    assert any("anchors rescaled" in w for w in result.warnings)
+    fs = pv.state.files[fid]
+    # anchors halved: x pixel 100 -> 50
+    assert fs.manual_anchors.p3_pixel[0] == pytest.approx(50.0)
+
+
+def test_add_json_sets_orientation():
+    from plotverify_core.app import PlotVerifyApp
+
+    doc = json.loads(_minimal_json(plot_type="bar", orientation="horizontal"))
+    doc["rows"] = [
+        {"series": "S", "x": 5.0, "y": 1.0},
+        {"series": "S", "x": 3.0, "y": 2.0},
+    ]
+    pv = PlotVerifyApp()
+    fid, result = pv.add_json(json.dumps(doc))
+    assert pv.state.files[fid].orientation == "horizontal"
+    assert pv.state.files[fid].plot_type == "bar"
+
+
+# ---------------------------------------------------------------------------
+# Export round-trip (schema 1.1)
+# ---------------------------------------------------------------------------
+
+def test_export_writes_schema_1_1():
+    from plotverify_core.app import PlotVerifyApp
+
+    pv = PlotVerifyApp()
+    fid, _ = pv.add_json(_minimal_json())
+    doc = json.loads(pv.export_json(fid).decode("utf-8"))
+    assert doc["schema_version"] == "1.1"
+    assert doc["orientation"] == "vertical"
+
+
+def test_export_round_trip_orientation_and_log_base():
+    from plotverify_core.app import PlotVerifyApp
+
+    src = json.loads(_minimal_json(plot_type="bar", orientation="horizontal"))
+    src["axes"] = _log_axes(x_base=2, y_base="e")
+    src["rows"] = [
+        {"series": "S", "x": 5.0, "y": 10.0},
+        {"series": "S", "x": 3.0, "y": 20.0},
+    ]
+    pv = PlotVerifyApp()
+    fid, _ = pv.add_json(json.dumps(src))
+
+    exported = pv.export_json(fid, include_image=True).decode("utf-8")
+    doc = json.loads(exported)
+    assert doc["orientation"] == "horizontal"
+    assert doc["axes"]["x"]["log_base"] == pytest.approx(2.0)
+    assert doc["axes"]["y"]["log_base"] == pytest.approx(math.e)
+
+    reparsed = parse_agent_json(exported)
+    assert reparsed.error is None
+    assert reparsed.orientation == "horizontal"
+    assert reparsed.anchors.x_log_base == pytest.approx(2.0)
+    assert reparsed.anchors.y_log_base == pytest.approx(math.e)

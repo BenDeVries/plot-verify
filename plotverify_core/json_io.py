@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -20,6 +20,15 @@ from .csv_io import LoadReport, validate_and_normalize
 from .session import Anchors
 
 SUPPORTED_SCHEMA_PREFIXES = ("1.",)
+EXPORT_SCHEMA_VERSION = "1.1"
+
+# Row coordinates are always image-axis coordinates: `x` is position along
+# the image's x-axis, `y` along its y-axis. For horizontal layouts (forest,
+# or bar/box with orientation "horizontal") the value therefore lives in `x`
+# and `y_err_lower`/`y_err_upper` bracket `x`. Forest-style `value` /
+# `value_err_*` aliases are accepted for any horizontal layout.
+_ORIENTATIONS = ("vertical", "horizontal")
+_ORIENTABLE_PLOT_TYPES = ("bar", "box")
 
 _PLOT_TYPE_MAP: Dict[str, str] = {
     "scatter": "scatter",
@@ -43,6 +52,7 @@ class JsonLoadResult:
     csv_df: Optional[pd.DataFrame] = None
     csv_report: Optional[LoadReport] = None
     plot_type: Optional[str] = None
+    orientation: str = "vertical"
     series_colors: Optional[Dict[str, str]] = None
     json_doc: Optional[dict] = None
     error: Optional[str] = None
@@ -99,8 +109,14 @@ def parse_agent_json(raw: str) -> JsonLoadResult:
         )
     result.plot_type = mapped_type
 
+    result.orientation = _parse_orientation(doc, mapped_type, result.warnings)
+
     is_forest = mapped_type == "forest"
-    df, report, df_warns = _extract_dataframe(doc, is_forest=is_forest)
+    df, report, df_warns = _extract_dataframe(
+        doc,
+        is_forest=is_forest,
+        horizontal=(not is_forest and result.orientation == "horizontal"),
+    )
     result.csv_df = df
     result.csv_report = report
     result.warnings.extend(df_warns)
@@ -127,7 +143,7 @@ def export_json(
     include_image: bool = False,
 ) -> str:
     """Serialize a :class:`PerFileState` back to the agent JSON schema."""
-    doc: Dict[str, Any] = {"schema_version": "1.0"}
+    doc: Dict[str, Any] = {"schema_version": EXPORT_SCHEMA_VERSION}
 
     img: Dict[str, Any] = {
         "filename": fs.image_filename or "image.png",
@@ -146,6 +162,12 @@ def export_json(
     doc["image"] = img
 
     doc["plot_type"] = fs.plot_type or "scatter"
+    doc["orientation"] = (
+        "horizontal"
+        if (fs.plot_type == "forest"
+            or getattr(fs, "orientation", "vertical") == "horizontal")
+        else "vertical"
+    )
 
     axes: Dict[str, Any] = {}
     result = fs.detection_result
@@ -159,6 +181,8 @@ def export_json(
                 "scale": "log" if xcal.log_base else "linear",
                 "calibration": x_anchors,
             }
+            if xcal.log_base:
+                axes["x"]["log_base"] = float(xcal.log_base)
         if result.y_calibration is not None:
             ycal = result.y_calibration
             y_anchors = _calibration_to_anchors(
@@ -168,6 +192,8 @@ def export_json(
                 "scale": "log" if ycal.log_base else "linear",
                 "calibration": y_anchors,
             }
+            if ycal.log_base:
+                axes["y"]["log_base"] = float(ycal.log_base)
     doc["axes"] = axes
 
     if fs.overlay is not None:
@@ -203,9 +229,86 @@ def export_json(
     return json.dumps(doc, indent=2, default=str)
 
 
+def rescale_anchors(anchors: Anchors, scale: float) -> Anchors:
+    """Return a copy of *anchors* with every pixel coordinate multiplied by
+    *scale*. Data values and log bases are unchanged. Used when the decoded
+    image was downscaled relative to the coordinates the JSON was written in.
+    """
+    return replace(
+        anchors,
+        p1_pixel=(anchors.p1_pixel[0] * scale, anchors.p1_pixel[1] * scale),
+        p2_pixel=(anchors.p2_pixel[0] * scale, anchors.p2_pixel[1] * scale),
+        p3_pixel=(anchors.p3_pixel[0] * scale, anchors.p3_pixel[1] * scale),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _parse_orientation(doc: dict, plot_type: str, warnings: List[str]) -> str:
+    """Validate the top-level ``orientation`` field against the plot type."""
+    raw = doc.get("orientation")
+    orientation = "vertical"
+    if raw is not None:
+        val = str(raw).strip().lower()
+        if val not in _ORIENTATIONS:
+            warnings.append(
+                f"Unknown orientation '{raw}'; defaulting to 'vertical'."
+            )
+        else:
+            orientation = val
+
+    if plot_type == "forest":
+        if orientation == "vertical" and raw is not None:
+            warnings.append(
+                "Forest plots are always horizontal; ignoring "
+                "orientation 'vertical'."
+            )
+        return "horizontal"
+
+    if orientation == "horizontal" and plot_type not in _ORIENTABLE_PLOT_TYPES:
+        warnings.append(
+            f"orientation 'horizontal' has no effect for plot type "
+            f"'{plot_type}'; treating as 'vertical'."
+        )
+        return "vertical"
+
+    return orientation
+
+
+def _parse_axis_log_base(
+    axis_block: dict, axis_name: str, warnings: List[str],
+) -> Optional[float]:
+    """Resolve the effective log base for one axis block.
+
+    Returns ``None`` for linear axes; otherwise the validated ``log_base``
+    (default 10, the string ``"e"`` maps to Euler's number).
+    """
+    scale = str(axis_block.get("scale", "linear")).lower()
+    raw = axis_block.get("log_base")
+    if scale != "log":
+        if raw is not None:
+            warnings.append(
+                f"axes.{axis_name}.log_base ignored because scale is not 'log'."
+            )
+        return None
+    if raw is None:
+        return 10.0
+    if isinstance(raw, str) and raw.strip().lower() == "e":
+        return math.e
+    try:
+        base = float(raw)
+    except (TypeError, ValueError):
+        base = float("nan")
+    if not math.isfinite(base) or base <= 1:
+        warnings.append(
+            f"Invalid axes.{axis_name}.log_base {raw!r} "
+            "(must be a number > 1 or 'e'); using 10."
+        )
+        return 10.0
+    return base
+
 
 def _extract_image(
     doc: dict,
@@ -301,10 +404,8 @@ def _extract_anchors(
     if y_top_px == y_bottom_px:
         return None, ["Degenerate y-axis: both calibration points have the same pixel position."]
 
-    x_scale = str(x_axis.get("scale", "linear")).lower()
-    y_scale = str(y_axis.get("scale", "linear")).lower()
-    x_log_base: Optional[float] = 10.0 if x_scale == "log" else None
-    y_log_base: Optional[float] = 10.0 if y_scale == "log" else None
+    x_log_base = _parse_axis_log_base(x_axis, "x", warnings)
+    y_log_base = _parse_axis_log_base(y_axis, "y", warnings)
 
     if x_log_base is not None:
         if x_left_val <= 0 or x_right_val <= 0:
@@ -334,7 +435,7 @@ def _extract_anchors(
 
 
 def _extract_dataframe(
-    doc: dict, *, is_forest: bool = False,
+    doc: dict, *, is_forest: bool = False, horizontal: bool = False,
 ) -> Tuple[Optional[pd.DataFrame], Optional[LoadReport], List[str]]:
     """Convert JSON ``rows`` to a validated DataFrame."""
     warnings: List[str] = []
@@ -344,11 +445,16 @@ def _extract_dataframe(
 
     df = pd.DataFrame(rows)
 
-    if is_forest and "value" in df.columns and "x" not in df.columns:
+    # Any horizontal layout accepts the forest-style value/value_err_*
+    # aliases; the value lands in `x` (see module docstring). For non-forest
+    # horizontal layouts `y` (the category coordinate) remains required.
+    if (is_forest or horizontal) and "value" in df.columns and "x" not in df.columns:
         from .csv_io import FOREST_COLUMN_MAP
         df = df.rename(columns=FOREST_COLUMN_MAP)
 
-    df, report = validate_and_normalize(df, is_forest=is_forest)
+    df, report = validate_and_normalize(
+        df, is_forest=is_forest, horizontal=horizontal,
+    )
     if df is None:
         return None, report, [report.error or "Data validation failed."]
 

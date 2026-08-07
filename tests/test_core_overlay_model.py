@@ -118,3 +118,47 @@ def test_handles_missing_error_columns():
     p = ov.get("A#0")
     assert p.y_err_lower is None
     assert p.y_err_upper is None
+
+
+# ---------------------------------------------------------------------------
+# Batch mutators
+# ---------------------------------------------------------------------------
+
+def test_nudge_points_gang_moves_with_audit():
+    ov = _basic_overlay()
+    pids = [p.point_id for p in ov.points()][:2]
+    before = {p.point_id: (p.x, p.y, p.y_err_upper, p.y_err_lower)
+              for p in ov.points()}
+    ov.nudge_points(pids, 0.5, 1.0)
+    for pid in pids:
+        p = ov.get(pid)
+        bx, by, bu, bl = before[pid]
+        assert p.x == bx + 0.5
+        assert p.y == by + 1.0
+        if bu is not None:
+            assert p.y_err_upper == bu + 1.0
+        if bl is not None:
+            assert p.y_err_lower == bl + 1.0
+        assert p.edited is True
+        assert p.edit_timestamp is not None
+
+
+def test_nudge_points_unknown_pid_raises_before_mutating():
+    ov = _basic_overlay()
+    pids = [p.point_id for p in ov.points()]
+    with pytest.raises(KeyError):
+        ov.nudge_points([pids[0], "Nope#99"], 1.0, 1.0)
+    # nothing was applied
+    assert not ov.get(pids[0]).edited
+
+
+def test_reset_points_clears_flags():
+    ov = _basic_overlay()
+    pids = [p.point_id for p in ov.points()][:2]
+    ov.nudge_points(pids, 1.0, 1.0)
+    ov.reset_points(pids)
+    for pid in pids:
+        p = ov.get(pid)
+        assert p.edited is False
+        assert p.x == p.original_x
+        assert p.y == p.original_y

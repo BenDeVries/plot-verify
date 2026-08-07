@@ -105,6 +105,57 @@ def _safe_bool(getter, default: bool, label: str = "input") -> bool:
         return default
 
 
+# ---------------------------------------------------------------------------
+# Overlay selection model
+# ---------------------------------------------------------------------------
+# The selection reactive holds None or a dict:
+#   {"pids": [pid, ...],   ordered, insertion order = click order
+#    "anchor": pid,        last-clicked; target of typed edits + zoom bubble
+#    "part": "center"|"upper"|"lower"}   meaningful only for single selection
+
+
+def _sel_pids(sel) -> list:
+    if not sel:
+        return []
+    return list(sel.get("pids") or [])
+
+
+def _sel_anchor(sel):
+    if not sel:
+        return None
+    return sel.get("anchor")
+
+
+def _sel_part(sel) -> str:
+    if not sel or len(_sel_pids(sel)) > 1:
+        return "center"
+    return sel.get("part", "center")
+
+
+def _update_selection(sel, pid, part, shift):
+    """Pure reducer for overlay point clicks.
+
+    Plain click replaces the selection; shift-click toggles the pid in the
+    set (the anchor falls back to the most recent remaining pid when the
+    anchor itself is removed). ``part`` is only kept for single selections.
+    """
+    if not shift or not sel:
+        return {"pids": [pid], "anchor": pid, "part": part}
+    pids = _sel_pids(sel)
+    if pid in pids:
+        pids = [p for p in pids if p != pid]
+        if not pids:
+            return None
+        anchor = _sel_anchor(sel)
+        if anchor == pid or anchor not in pids:
+            anchor = pids[-1]
+        return {"pids": pids, "anchor": anchor,
+                "part": part if len(pids) == 1 else "center"}
+    pids = pids + [pid]
+    return {"pids": pids, "anchor": pid,
+            "part": part if len(pids) == 1 else "center"}
+
+
 from axis_pipeline import (
     CalibrationConfig,
     detect_axis_frame,
@@ -119,6 +170,7 @@ from plotverify_core import (
     build_masked_overlay_image,
     build_overlay_traces,
     hex_to_bgr,
+    is_horizontal_layout,
     px_to_data,
 )
 from plotverify_core.dashboard import (
@@ -143,7 +195,17 @@ from .figures import (
     enforce_anchor_constraints,
     guide_line_traces,
 )
+from .edit_logic import PointVals, apply_nudge, half_width_of, linked_bounds
+from .runtime_flags import json_only_mode
 from .user_manual import user_manual_tab
+
+# Evaluated once at import: the UI tree is built when the module loads, so a
+# mid-session env change cannot (and should not) retoggle the mode.
+_JSON_ONLY = json_only_mode()
+
+# First tab in the navbar — used as the fallback before `main_nav` binds, so
+# render guards ("only draw when my tab is active") pass on the initial load.
+_DEFAULT_NAV = "Overlay" if _JSON_ONLY else "Calibrate"
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +391,7 @@ def _overlay_tab() -> ui.Tag:
                             value="export",
                         ),
                         id="overlay_controls_accordion",
-                        open=["series", "edit_point", "export"],
+                        open=["series", "edit_point"],
                         multiple=True,
                     ),
                     fillable=False,
@@ -362,7 +424,13 @@ def _overlay_tab() -> ui.Tag:
                 "background:rgba(255,255,255,0.97); "
                 "padding:0; overflow:hidden; "
                 "opacity:0; transform:scale(0.95); "
-                "transition:opacity 0.12s ease, transform 0.12s ease; "
+                # visibility (not just pointer-events) — Plotly sets inline
+                # `pointer-events:all` on its drag-layer rects, which would
+                # otherwise keep hit-testing the hidden bubble and swallow
+                # clicks on the accordion headers beneath it.
+                "visibility:hidden; "
+                "transition:opacity 0.12s ease, transform 0.12s ease, "
+                "visibility 0.12s; "
                 "pointer-events:none;"
             ),
         ),
@@ -441,25 +509,55 @@ _ANCHOR_KEY_SCRIPT = """<style>
         return null;
     }
 
-    function onKey(e) {
-        var arrow = detectArrow(e);
-        log('keydown key=' + e.key + ' keyCode=' + e.keyCode +
-            ' arrow=' + arrow + ' target=' + (e.target && e.target.tagName) +
-            ' shift=' + e.shiftKey);
-        if (!arrow) return;
-        if (isFormTarget(e.target)) { log('form target, ignoring'); return; }
-        e.preventDefault();
-        e.stopPropagation();
+    // Arrow-key coalescing: every keydown (including OS key-repeat while a
+    // key is held) accumulates into step counters; a leading-edge send keeps
+    // single taps instant while the trailing-edge timer batches held keys
+    // into ~1 message per FLUSH_MS. The Shift x10 multiplier is applied at
+    // accumulate time so mixed shift/plain presses in one window stay exact.
+    var pvNudgeAcc = {dx: 0, dy: 0, timer: null, lastSend: 0};
+    var PV_NUDGE_FLUSH_MS = 60;
+
+    function flushNudge() {
+        pvNudgeAcc.timer = null;
+        if (!pvNudgeAcc.dx && !pvNudgeAcc.dy) return;
         if (typeof Shiny === 'undefined' || !Shiny.setInputValue) {
             log('Shiny.setInputValue not available');
+            pvNudgeAcc.dx = 0; pvNudgeAcc.dy = 0;
             return;
         }
         Shiny.setInputValue(
             'anchor_nudge',
-            {key: arrow, step: e.shiftKey ? 10 : 1, ts: Date.now()},
+            {dx: pvNudgeAcc.dx, dy: pvNudgeAcc.dy, ts: Date.now()},
             {priority: 'event'}
         );
-        log('nudge sent: ' + arrow);
+        log('nudge sent: dx=' + pvNudgeAcc.dx + ' dy=' + pvNudgeAcc.dy);
+        pvNudgeAcc.dx = 0;
+        pvNudgeAcc.dy = 0;
+        pvNudgeAcc.lastSend = Date.now();
+    }
+
+    function onKey(e) {
+        if ((e.key === 'Escape' || e.keyCode === 27) && !isFormTarget(e.target)) {
+            if (typeof Shiny !== 'undefined' && Shiny.setInputValue) {
+                Shiny.setInputValue('overlay_deselect', {ts: Date.now()}, {priority: 'event'});
+            }
+            return;
+        }
+        var arrow = detectArrow(e);
+        if (!arrow) return;
+        if (isFormTarget(e.target)) { log('form target, ignoring'); return; }
+        e.preventDefault();
+        e.stopPropagation();
+        var m = e.shiftKey ? 10 : 1;
+        if (arrow === 'ArrowRight')      pvNudgeAcc.dx += m;
+        else if (arrow === 'ArrowLeft')  pvNudgeAcc.dx -= m;
+        else if (arrow === 'ArrowUp')    pvNudgeAcc.dy += m;
+        else                             pvNudgeAcc.dy -= m;
+        if (Date.now() - pvNudgeAcc.lastSend > PV_NUDGE_FLUSH_MS) {
+            flushNudge();
+        } else if (!pvNudgeAcc.timer) {
+            pvNudgeAcc.timer = setTimeout(flushNudge, PV_NUDGE_FLUSH_MS);
+        }
     }
 
     // Attach in capture phase to every plausible scope so nothing can
@@ -514,17 +612,45 @@ _ANCHOR_KEY_SCRIPT = """<style>
                             // scatter puts a status note in cd[1], so restrict
                             // to the exact 'upper'/'lower' sentinels.
                             var part = (cd.length >= 2 && (cd[1] === 'upper' || cd[1] === 'lower')) ? cd[1] : 'center';
-                            log('overlay click: ' + pid + ' part=' + part);
+                            var shift = !!(data.event && data.event.shiftKey);
+                            log('overlay click: ' + pid + ' part=' + part + ' shift=' + shift);
                             pvOverlayClickHandled = true;
                             if (typeof Shiny !== 'undefined' && Shiny.setInputValue) {
                                 Shiny.setInputValue(
                                     'overlay_click',
-                                    {pid: pid, part: part, ts: Date.now()},
+                                    {pid: pid, part: part, shift: shift, ts: Date.now()},
                                     {priority: 'event'}
                                 );
                             }
                         }
                     }
+                }
+            });
+
+            // Box/lasso select → multi-selection. Dedupe pids because the
+            // cap traces carry the same pid as the main scatter point.
+            plot.on('plotly_selected', function(data) {
+                if (!isOverlayPlot) return;
+                if (!data || !data.points || !data.points.length) return;
+                var seen = {};
+                var pids = [];
+                data.points.forEach(function(p) {
+                    var cd = p.customdata;
+                    var pid = cd && cd.length >= 1 ? cd[0] : null;
+                    if (typeof pid === 'string' && pid.indexOf('#') !== -1 && !seen[pid]) {
+                        seen[pid] = true;
+                        pids.push(pid);
+                    }
+                });
+                if (!pids.length) return;
+                log('overlay box select: ' + pids.length + ' points');
+                pvOverlayClickHandled = true;
+                if (typeof Shiny !== 'undefined' && Shiny.setInputValue) {
+                    Shiny.setInputValue(
+                        'overlay_box_select',
+                        {pids: pids, ts: Date.now()},
+                        {priority: 'event'}
+                    );
                 }
             });
         });
@@ -542,6 +668,10 @@ _ANCHOR_KEY_SCRIPT = """<style>
     document.addEventListener('mousedown', function(e) {
         var container = document.getElementById('overlay_plot');
         if (!container || !container.contains(e.target)) return;
+        // Starting a box/lasso selection must not clear the selection.
+        var gd = container.querySelector('.js-plotly-plot');
+        var dm = gd && gd._fullLayout && gd._fullLayout.dragmode;
+        if (dm === 'select' || dm === 'lasso') return;
         pvOverlayClickHandled = false;
         setTimeout(function() {
             if (!pvOverlayClickHandled) {
@@ -589,11 +719,16 @@ _ANCHOR_KEY_SCRIPT = """<style>
         fixOverlayWidth();
     })();
 
-    // Show/hide the floating zoom bubble via server message.
+    // Show/hide the floating zoom bubble via server message. Toggle
+    // visibility as well as opacity/pointer-events: Plotly's drag-layer
+    // rects carry inline `pointer-events:all`, so a merely-transparent
+    // bubble would still hit-test and swallow clicks on the accordion
+    // headers beneath it.
     Shiny.addCustomMessageHandler('pv_bubble_show', function(msg) {
         var el = document.getElementById('pv-zoom-bubble');
         if (!el) return;
         if (msg.show) {
+            el.style.visibility = 'visible';
             el.style.opacity = '1';
             el.style.transform = 'scale(1)';
             el.style.pointerEvents = 'auto';
@@ -601,6 +736,7 @@ _ANCHOR_KEY_SCRIPT = """<style>
             el.style.opacity = '0';
             el.style.transform = 'scale(0.95)';
             el.style.pointerEvents = 'none';
+            el.style.visibility = 'hidden';
         }
     });
 
@@ -672,33 +808,62 @@ _ANCHOR_KEY_SCRIPT = """<style>
 
 
 
-def _make_ui() -> ui.Tag:
-    return ui.page_navbar(
-        _calibration_tab(),
-        _overlay_tab(),
-        user_manual_tab(),
-        title="PlotVerify (Shiny)",
-        id="main_nav",
-        sidebar=ui.sidebar(
-            ui.h4("Upload"),
-            ui.input_file("image_upload", "Plot image",
-                            accept=[".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"],
-                            multiple=False),
-            ui.input_file("csv_upload", "Data CSV",
-                            accept=[".csv"], multiple=False),
-            ui.output_ui("ocr_banner"),
-            ui.hr(),
-            ui.h5("Agent JSON"),
-            ui.input_file("json_upload", "JSON file",
-                            accept=[".json"], multiple=False),
-            ui.input_text_area("json_paste", "or paste JSON", rows=3,
-                                placeholder='{"schema_version": "1.0", ...}'),
-            ui.input_action_button("json_apply", "Import JSON",
-                                    class_="btn-outline-primary btn-sm"),
+def _make_sidebar(json_only: Optional[bool] = None) -> ui.Sidebar:
+    if json_only is None:
+        json_only = _JSON_ONLY
+    json_block = [
+        ui.h5("Agent JSON"),
+        ui.input_file("json_upload", "JSON file",
+                        accept=[".json"], multiple=False),
+        ui.input_text_area("json_paste", "or paste JSON", rows=3,
+                            placeholder='{"schema_version": "1.1", ...}'),
+        ui.input_action_button("json_apply", "Import JSON",
+                                class_="btn-outline-primary btn-sm"),
+    ]
+    if json_only:
+        # JSON-only surface: the JSON carries the image, data, calibration,
+        # plot type and orientation — no separate uploads, no OCR banner.
+        return ui.sidebar(
+            *json_block,
+            ui.tags.small(
+                "Import an Agent JSON with an embedded image, calibration "
+                "and data rows.",
+                style="color:#666;",
+            ),
             ui.hr(),
             ui.output_ui("session_status"),
             width=320,
-        ),
+        )
+    return ui.sidebar(
+        ui.h4("Upload"),
+        ui.input_file("image_upload", "Plot image",
+                        accept=[".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"],
+                        multiple=False),
+        ui.input_file("csv_upload", "Data CSV",
+                        accept=[".csv"], multiple=False),
+        ui.output_ui("ocr_banner"),
+        ui.hr(),
+        *json_block,
+        ui.hr(),
+        ui.output_ui("session_status"),
+        width=320,
+    )
+
+
+def _make_ui(json_only: Optional[bool] = None) -> ui.Tag:
+    if json_only is None:
+        json_only = _JSON_ONLY
+    panels = []
+    if not json_only:
+        panels.append(_calibration_tab())
+    panels.append(_overlay_tab())
+    panels.append(user_manual_tab())
+    return ui.page_navbar(
+        *panels,
+        title="PlotVerify (Shiny)",
+        id="main_nav",
+        **({"selected": "Overlay"} if json_only else {}),
+        sidebar=_make_sidebar(json_only),
         header=ui.HTML(_ANCHOR_KEY_SCRIPT),
     )
 
@@ -988,6 +1153,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             and fs.detection_result.success
         )
         has_data = fs is not None and fs.csv_df is not None
+        if _JSON_ONLY and not has_cal:
+            # There is no Calibrate tab to recover with in JSON-only mode:
+            # calibration must come from the JSON itself.
+            ui.notification_show(
+                "This deployment requires calibration in the JSON "
+                "(axes.x / axes.y with two pixel/value pairs each). "
+                "Re-export the JSON with an axes block and import again.",
+                type="error", duration=12,
+            )
+            return
         if has_cal and has_data:
             ui.update_navs("main_nav", selected="Overlay")
             ui.notification_show(
@@ -1242,9 +1417,50 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         with widget.batch_update():
             widget.layout.shapes = band_shapes(yb, xb)
 
+    def _selection_highlight_arrays(fs, sel):
+        """Coordinate arrays for the four ``_pv_sel_*`` sentinel traces.
+
+        Centers show every selected point; the bound markers track the
+        anchor only (keeps the part-focus readable); the big anchor ring
+        appears only when more than one point is selected.
+        """
+        empty = ([], [])
+        out = {"_pv_sel_center": empty, "_pv_sel_upper": empty,
+               "_pv_sel_lower": empty, "_pv_sel_anchor": empty}
+        pids = _sel_pids(sel)
+        if not pids:
+            return out
+        by_pid = {p.point_id: p for p in fs.overlay.points()}
+        pts = [by_pid[p] for p in pids if p in by_pid]
+        if not pts:
+            return out
+        out["_pv_sel_center"] = ([float(p.x) for p in pts],
+                                 [float(p.y) for p in pts])
+        anchor_pt = by_pid.get(_sel_anchor(sel))
+        if anchor_pt is None:
+            return out
+        is_horiz = _fs_is_horizontal(fs)
+        u, l = anchor_pt.y_err_upper, anchor_pt.y_err_lower
+        _u_ok = u is not None and np.isfinite(float(u))
+        _l_ok = l is not None and np.isfinite(float(l))
+        if is_horiz:
+            # Interval runs along x, so the endpoints sit at (bound, category-y).
+            if _u_ok:
+                out["_pv_sel_upper"] = ([float(u)], [float(anchor_pt.y)])
+            if _l_ok:
+                out["_pv_sel_lower"] = ([float(l)], [float(anchor_pt.y)])
+        else:
+            if _u_ok:
+                out["_pv_sel_upper"] = ([float(anchor_pt.x)], [float(u)])
+            if _l_ok:
+                out["_pv_sel_lower"] = ([float(anchor_pt.x)], [float(l)])
+        if len(pts) > 1:
+            out["_pv_sel_anchor"] = ([float(anchor_pt.x)], [float(anchor_pt.y)])
+        return out
+
     @reactive.effect
     def _push_overlay_selection_to_widget():
-        """Update the three selection-highlight traces in the overlay widget in-place.
+        """Update the selection-highlight traces in the overlay widget in-place.
 
         Runs when selected_overlay_rv changes or the widget is rebuilt, so
         the highlight follows the user's selection without a full figure rebuild.
@@ -1257,7 +1473,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         trace_map = {}
         for tr in widget.data:
             n = getattr(tr, "name", None)
-            if n in ("_pv_sel_center", "_pv_sel_upper", "_pv_sel_lower"):
+            if n in ("_pv_sel_center", "_pv_sel_upper",
+                     "_pv_sel_lower", "_pv_sel_anchor"):
                 trace_map[n] = tr
         if not trace_map:
             return
@@ -1274,30 +1491,12 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         fs = pv.state.files.get(fid)
         if fs is None or fs.overlay is None:
             return
-        pid = sel.get("pid")
-        pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
-        if pt is None:
-            return
-        is_forest = fs.plot_type == "forest"
-        _u_ok = pt.y_err_upper is not None and np.isfinite(float(pt.y_err_upper))
-        _l_ok = pt.y_err_lower is not None and np.isfinite(float(pt.y_err_lower))
-        if is_forest:
-            # Interval runs along x, so the endpoints sit at (bound, row-y).
-            upper_xy = ([float(pt.y_err_upper)], [float(pt.y)]) if _u_ok else ([], [])
-            lower_xy = ([float(pt.y_err_lower)], [float(pt.y)]) if _l_ok else ([], [])
-        else:
-            upper_xy = ([float(pt.x)], [float(pt.y_err_upper)]) if _u_ok else ([], [])
-            lower_xy = ([float(pt.x)], [float(pt.y_err_lower)]) if _l_ok else ([], [])
+        arrays = _selection_highlight_arrays(fs, sel)
         with widget.batch_update():
-            if "_pv_sel_center" in trace_map:
-                trace_map["_pv_sel_center"].x = [float(pt.x)]
-                trace_map["_pv_sel_center"].y = [float(pt.y)]
-            if "_pv_sel_upper" in trace_map:
-                trace_map["_pv_sel_upper"].x = upper_xy[0]
-                trace_map["_pv_sel_upper"].y = upper_xy[1]
-            if "_pv_sel_lower" in trace_map:
-                trace_map["_pv_sel_lower"].x = lower_xy[0]
-                trace_map["_pv_sel_lower"].y = lower_xy[1]
+            for name, (axs, ays) in arrays.items():
+                if name in trace_map:
+                    trace_map[name].x = axs
+                    trace_map[name].y = ays
 
     @render.ui
     def cal_summary():
@@ -1502,176 +1701,202 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             pass
         return 0.1
 
-    def _apply_symmetry(x, y, upper, lower, mode):
-        """Transform y_err_upper/lower before persisting based on symmetry mode.
+    def _fs_is_horizontal(fs) -> bool:
+        """Value axis runs along x (forest, or horizontal bar/box)."""
+        return fs is not None and is_horizontal_layout(
+            fs.plot_type, getattr(fs, "orientation", "vertical"))
 
-        mode "upper"  → lower  = 2*y - upper
-        mode "lower"  → upper  = 2*y - lower
-        mode "both"   → y      = (upper + lower) / 2
+    def _model_vals(fs, pt):
+        """A point's current values as ``PointVals`` (non-finite bounds → None)."""
+        u, l = pt.y_err_upper, pt.y_err_lower
+        return PointVals(
+            x=float(pt.x), y=float(pt.y),
+            upper=(float(u) if u is not None and np.isfinite(float(u)) else None),
+            lower=(float(l) if l is not None and np.isfinite(float(l)) else None),
+        )
+
+    def _sync_edit_inputs(fs, pid):
+        """Reflect a point's model values into the edit-panel inputs.
+
+        Pushes exact floats so the echo events compare clean against the
+        model inside ``_live_update_point_inputs`` (its 1e-10 guard).
         """
-        if mode == "upper":
-            if upper is not None and np.isfinite(float(upper)):
-                lower = 2.0 * float(y) - float(upper)
-        elif mode == "lower":
-            if lower is not None and np.isfinite(float(lower)):
-                upper = 2.0 * float(y) - float(lower)
-        elif mode == "both":
-            u = float(upper) if upper is not None and np.isfinite(float(upper)) else float(y)
-            l = float(lower) if lower is not None and np.isfinite(float(lower)) else float(y)
-            y = (u + l) / 2.0
-        return x, y, upper, lower
+        pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
+        if pt is None:
+            return
+        vals = _model_vals(fs, pt)
+        ui.update_numeric("edit_point_x", value=vals.x)
+        ui.update_numeric("edit_point_y", value=vals.y)
+        if vals.upper is not None:
+            ui.update_numeric("edit_err_upper", value=vals.upper)
+        if vals.lower is not None:
+            ui.update_numeric("edit_err_lower", value=vals.lower)
+        center = vals.x if _fs_is_horizontal(fs) else vals.y
+        hw = half_width_of(center, vals.upper, vals.lower)
+        ui.update_numeric("edit_half_width", value=hw if hw is not None else 0.0)
 
-    def _push_point_edit_to_widget(pid, new_x, new_y, new_upper, new_lower):
-        """Update one edited point in the overlay FigureWidget in-place.
+    def _push_point_edits_to_widget(edits):
+        """Update edited points in the overlay FigureWidget in-place.
 
-        Touches only the affected scatter trace, its error-bar arrays, the
-        clickable cap traces, and the selection-highlight sentinels — no full
-        figure rebuild, so arrow-key editing is smooth.
+        ``edits`` is a list of ``(pid, x, y, upper, lower)`` tuples whose
+        values are already persisted to ``fs.overlay``. Trace lookup happens
+        once and every mutation shares one ``batch_update()``, so a
+        multi-point gang nudge costs a single round-trip. No full figure
+        rebuild, so arrow-key editing is smooth.
         """
         widget = overlay_plot.widget
-        if widget is None:
-            return
-        try:
-            series = pid.rsplit("#", 1)[0]
-        except (ValueError, IndexError):
+        if widget is None or not edits:
             return
         with reactive.isolate():
             fid = file_id_rv()
+            sel = selected_overlay_rv()
         fs = pv.state.files.get(fid) if fid is not None else None
-        is_forest = fs is not None and fs.plot_type == "forest"
-        main_tr = cap_u_tr = cap_l_tr = None
-        rib_u_tr = rib_l_tr = rib_band_tr = None
-        sel_center = sel_upper = sel_lower = None
+        if fs is None or fs.overlay is None:
+            return
+        is_horiz = _fs_is_horizontal(fs)
+        tmap = {}
         for tr in widget.data:
             n = getattr(tr, "name", "") or ""
-            if n == series:
-                main_tr = tr
-            elif n == f"_pv_cap_u_{series}":
-                cap_u_tr = tr
-            elif n == f"_pv_cap_l_{series}":
-                cap_l_tr = tr
-            elif n == f"_pv_rib_u_{series}":
-                rib_u_tr = tr
-            elif n == f"_pv_rib_l_{series}":
-                rib_l_tr = tr
-            elif n == f"_pv_rib_{series}":
-                rib_band_tr = tr
-            elif n == "_pv_sel_center":
-                sel_center = tr
-            elif n == "_pv_sel_upper":
-                sel_upper = tr
-            elif n == "_pv_sel_lower":
-                sel_lower = tr
-        if main_tr is None:
-            return
-        _u_ok = new_upper is not None and np.isfinite(float(new_upper))
-        _l_ok = new_lower is not None and np.isfinite(float(new_lower))
-        # Find the series-local index by matching the pid in the trace's customdata.
-        # customdata layout for main scatter: [[pid], [pid], ...]
-        local_idx = None
-        if main_tr.customdata is not None:
-            for ci, row in enumerate(main_tr.customdata):
-                if str(list(row)[0]) == pid:
-                    local_idx = ci
-                    break
-        if local_idx is None:
-            return
+            if n:
+                tmap[n] = tr
+
+        by_series = {}
+        for edit in edits:
+            series = str(edit[0]).rsplit("#", 1)[0]
+            by_series.setdefault(series, []).append(edit)
+
         with widget.batch_update():
-            xs = list(main_tr.x)
-            ys = list(main_tr.y)
-            old_x = float(xs[local_idx]) if 0 <= local_idx < len(xs) else float(new_x)
-            if 0 <= local_idx < len(xs):
-                xs[local_idx] = float(new_x)
-                ys[local_idx] = float(new_y)
-                main_tr.x = xs
-                main_tr.y = ys
-            # Update error-bar arrays in-place. Forest brackets the value axis
-            # (error_x) measured from x; time-series/scatter bracket y (error_y).
-            _e_base = float(new_x) if is_forest else float(new_y)
-            ebar = main_tr.error_x if is_forest else main_tr.error_y
-            if ebar is not None and getattr(ebar, "array", None) is not None:
-                arr_plus = list(ebar.array)
-                _am = ebar.arrayminus
-                arr_minus = list(_am) if _am is not None else [0.0] * len(arr_plus)
-                if 0 <= local_idx < len(arr_plus):
-                    if _u_ok:
-                        arr_plus[local_idx] = max(0.0, float(new_upper) - _e_base)
-                    if _l_ok:
-                        arr_minus[local_idx] = max(0.0, _e_base - float(new_lower))
-                    ebar.array = arr_plus
-                    ebar.arrayminus = arr_minus
-            if is_forest:
-                # Forest ribbon is a single horizontal band rectangle per row.
-                if rib_band_tr is not None and _u_ok and _l_ok:
-                    hh = 0.32
-                    lo, hi, yc = float(new_lower), float(new_upper), float(new_y)
-                    rib_band_tr.x = [lo, hi, hi, lo, lo, None]
-                    rib_band_tr.y = [yc - hh, yc - hh, yc + hh, yc + hh, yc - hh, None]
-            elif (rib_u_tr is not None and rib_l_tr is not None
-                    and _u_ok and _l_ok):
-                # ribbon_y_upper / ribbon_y_lower hold absolute y_err_upper/lower;
-                # ribbon_x is the x-coords of error-bar points sorted by x.
-                rxs = list(rib_u_tr.x)
-                rys_u = list(rib_u_tr.y)
-                rys_l = list(rib_l_tr.y)
-                # Locate this point in the ribbon by matching old_x.
-                rib_idx = next(
-                    (ri for ri, rx in enumerate(rxs) if abs(float(rx) - old_x) < 1e-9),
-                    None,
-                )
-                if rib_idx is not None:
-                    rxs[rib_idx] = float(new_x)
-                    rys_u[rib_idx] = float(new_upper)
-                    rys_l[rib_idx] = float(new_lower)
-                    rib_u_tr.x = rxs
-                    rib_u_tr.y = rys_u
-                    rib_l_tr.x = rxs
-                    rib_l_tr.y = rys_l
-            # Update clickable cap traces — match by pid (customdata[0]). Forest
-            # caps sit at (bound, row-y); vertical caps at (x, bound).
-            for cap_tr, val in ((cap_u_tr, new_upper), (cap_l_tr, new_lower)):
-                if cap_tr is None or cap_tr.customdata is None or val is None:
+            for series, series_edits in by_series.items():
+                main_tr = tmap.get(series)
+                if main_tr is None or main_tr.customdata is None:
                     continue
-                for ci, row in enumerate(cap_tr.customdata):
-                    if str(list(row)[0]) == pid and np.isfinite(float(val)):
-                        cxs = list(cap_tr.x)
-                        cys = list(cap_tr.y)
-                        if is_forest:
+                pid_to_local = {str(list(row)[0]): ci
+                                for ci, row in enumerate(main_tr.customdata)}
+                xs = list(main_tr.x)
+                ys = list(main_tr.y)
+                # Horizontal layouts bracket the value axis (error_x)
+                # measured from x; vertical ones bracket y.
+                ebar = main_tr.error_x if is_horiz else main_tr.error_y
+                arr_plus = arr_minus = None
+                if ebar is not None and getattr(ebar, "array", None) is not None:
+                    arr_plus = list(ebar.array)
+                    _am = ebar.arrayminus
+                    arr_minus = list(_am) if _am is not None else [0.0] * len(arr_plus)
+                cap_u_tr = tmap.get(f"_pv_cap_u_{series}")
+                cap_l_tr = tmap.get(f"_pv_cap_l_{series}")
+                rib_u_tr = tmap.get(f"_pv_rib_u_{series}")
+                rib_l_tr = tmap.get(f"_pv_rib_l_{series}")
+                rib_band_tr = tmap.get(f"_pv_rib_{series}")
+                caps = {}
+                for cap_tr in (cap_u_tr, cap_l_tr):
+                    if cap_tr is not None and cap_tr.customdata is not None:
+                        caps[id(cap_tr)] = (
+                            {str(list(row)[0]): ci
+                             for ci, row in enumerate(cap_tr.customdata)},
+                            list(cap_tr.x), list(cap_tr.y),
+                        )
+                rib = None
+                if rib_u_tr is not None and rib_l_tr is not None:
+                    rib = (list(rib_u_tr.x), list(rib_u_tr.y), list(rib_l_tr.y))
+
+                for pid, new_x, new_y, new_upper, new_lower in series_edits:
+                    li = pid_to_local.get(str(pid))
+                    if li is None or not (0 <= li < len(xs)):
+                        continue
+                    old_x = float(xs[li])
+                    xs[li] = float(new_x)
+                    ys[li] = float(new_y)
+                    _u_ok = new_upper is not None and np.isfinite(float(new_upper))
+                    _l_ok = new_lower is not None and np.isfinite(float(new_lower))
+                    _e_base = float(new_x) if is_horiz else float(new_y)
+                    if arr_plus is not None and 0 <= li < len(arr_plus):
+                        if _u_ok:
+                            arr_plus[li] = max(0.0, float(new_upper) - _e_base)
+                        if _l_ok:
+                            arr_minus[li] = max(0.0, _e_base - float(new_lower))
+                    # Ribbon: locate this point by its previous x.
+                    if rib is not None and _u_ok and _l_ok:
+                        rxs, rys_u, rys_l = rib
+                        rib_idx = next(
+                            (ri for ri, rx in enumerate(rxs)
+                             if abs(float(rx) - old_x) < 1e-9),
+                            None,
+                        )
+                        if rib_idx is not None:
+                            rxs[rib_idx] = float(new_x)
+                            rys_u[rib_idx] = float(new_upper)
+                            rys_l[rib_idx] = float(new_lower)
+                    # Clickable caps: (bound, category-y) in horizontal
+                    # layouts; (x, bound) in vertical ones.
+                    for cap_tr, val in ((cap_u_tr, new_upper), (cap_l_tr, new_lower)):
+                        if (cap_tr is None or val is None
+                                or id(cap_tr) not in caps
+                                or not np.isfinite(float(val))):
+                            continue
+                        cmap, cxs, cys = caps[id(cap_tr)]
+                        ci = cmap.get(str(pid))
+                        if ci is None:
+                            continue
+                        if is_horiz:
                             cxs[ci] = float(val)
                             cys[ci] = float(new_y)
                         else:
                             cxs[ci] = float(new_x)
                             cys[ci] = float(val)
+
+                main_tr.x = xs
+                main_tr.y = ys
+                if arr_plus is not None and ebar is not None:
+                    ebar.array = arr_plus
+                    ebar.arrayminus = arr_minus
+                if rib is not None:
+                    rib_u_tr.x = rib[0]
+                    rib_u_tr.y = rib[1]
+                    rib_l_tr.x = rib[0]
+                    rib_l_tr.y = rib[2]
+                for cap_tr in (cap_u_tr, cap_l_tr):
+                    if cap_tr is not None and id(cap_tr) in caps:
+                        _, cxs, cys = caps[id(cap_tr)]
                         cap_tr.x = cxs
                         cap_tr.y = cys
-                        break
-            # Update selection highlights. Forest endpoints are (bound, row-y).
-            if sel_center is not None:
-                sel_center.x = [float(new_x)]
-                sel_center.y = [float(new_y)]
-            if sel_upper is not None:
-                if _u_ok and is_forest:
-                    sel_upper.x = [float(new_upper)]
-                    sel_upper.y = [float(new_y)]
-                elif _u_ok:
-                    sel_upper.x = [float(new_x)]
-                    sel_upper.y = [float(new_upper)]
-                else:
-                    sel_upper.x = []
-                    sel_upper.y = []
-            if sel_lower is not None:
-                if _l_ok and is_forest:
-                    sel_lower.x = [float(new_lower)]
-                    sel_lower.y = [float(new_y)]
-                elif _l_ok:
-                    sel_lower.x = [float(new_x)]
-                    sel_lower.y = [float(new_lower)]
-                else:
-                    sel_lower.x = []
-                    sel_lower.y = []
-        # Keep the zoom bubble in sync (defined below; safe because this is
-        # only ever called after server initialisation is complete).
-        _push_zoom_bubble_update(pid, new_x, new_y, new_upper, new_lower)
+                # Forest band (one rectangle per row): rebuild the whole
+                # series band from the already-persisted overlay model so
+                # multi-row edits stay consistent.
+                if rib_band_tr is not None:
+                    band_x = []
+                    band_y = []
+                    hh = 0.32
+                    for p in fs.overlay.points():
+                        if str(p.point_id).rsplit("#", 1)[0] != series:
+                            continue
+                        u, l = p.y_err_upper, p.y_err_lower
+                        if (u is None or l is None
+                                or not np.isfinite(float(u))
+                                or not np.isfinite(float(l))):
+                            continue
+                        lo, hi, yc = float(l), float(u), float(p.y)
+                        band_x += [lo, hi, hi, lo, lo, None]
+                        band_y += [yc - hh, yc - hh, yc + hh, yc + hh, yc - hh, None]
+                    rib_band_tr.x = band_x
+                    rib_band_tr.y = band_y
+
+            # Selection highlights track the (already-persisted) model.
+            arrays = _selection_highlight_arrays(fs, sel)
+            for name, (axs, ays) in arrays.items():
+                tr = tmap.get(name)
+                if tr is not None:
+                    tr.x = axs
+                    tr.y = ays
+        # Keep the zoom bubble in sync for the anchor point. (Defined below;
+        # safe because this only runs after server initialisation.)
+        anchor = _sel_anchor(sel)
+        anchor_edit = next((e for e in edits if str(e[0]) == anchor), None)
+        if anchor_edit is not None:
+            _push_zoom_bubble_update(*anchor_edit)
+
+    def _push_point_edit_to_widget(pid, new_x, new_y, new_upper, new_lower):
+        """Single-point wrapper around :func:`_push_point_edits_to_widget`."""
+        _push_point_edits_to_widget([(pid, new_x, new_y, new_upper, new_lower)])
 
     def _push_zoom_bubble_update(pid, new_x, new_y, new_upper, new_lower):
         """Update the zoom bubble widget in-place — no figure rebuild."""
@@ -1681,7 +1906,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         with reactive.isolate():
             sel = selected_overlay_rv()
             fid = file_id_rv()
-        if sel is None or sel.get("pid") != pid or fid is None:
+        if sel is None or _sel_anchor(sel) != pid or fid is None:
             return
         fs = pv.state.files.get(fid)
         if fs is None:
@@ -1689,13 +1914,13 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         cal = cal_dict_from_result(fs.detection_result)
         if not cal.get("applied"):
             return
-        part = sel.get("part", "center")
-        is_forest = fs.plot_type == "forest"
+        part = _sel_part(sel)
+        is_horiz = _fs_is_horizontal(fs)
         _u_ok = new_upper is not None and np.isfinite(float(new_upper))
         _l_ok = new_lower is not None and np.isfinite(float(new_lower))
 
-        if is_forest:
-            # Endpoints are x-values on a fixed row.
+        if is_horiz:
+            # Endpoints are x-values at a fixed category coordinate.
             if part == "upper" and _u_ok:
                 focus_x, focus_y = float(new_upper), float(new_y)
             elif part == "lower" and _l_ok:
@@ -1729,8 +1954,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
         _has_iv = (new_upper is not None and np.isfinite(float(new_upper))
                    and new_lower is not None and np.isfinite(float(new_lower)))
-        if is_forest:
-            # Interval runs along x; keep the vertical (row) framing steady.
+        if is_horiz:
+            # Interval runs along x; keep the vertical (category) framing steady.
             err_w_plot = (abs(_plot(float(new_upper), x_log) - _plot(float(new_lower), x_log))
                           if _has_iv else None)
             x_zoom_r = err_w_plot * 0.8 if (err_w_plot and err_w_plot > 0) else x_full * 0.05
@@ -1775,9 +2000,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             if bub_pt is not None:
                 bub_pt.x = [float(new_x)]
                 bub_pt.y = [float(new_y)]
-                # Interval brackets x for forest, y otherwise.
-                _base = float(new_x) if is_forest else float(new_y)
-                ebar = bub_pt.error_x if is_forest else bub_pt.error_y
+                # Interval brackets x for horizontal layouts, y otherwise.
+                _base = float(new_x) if is_horiz else float(new_y)
+                ebar = bub_pt.error_x if is_horiz else bub_pt.error_y
                 if ebar is not None:
                     if new_upper is not None and np.isfinite(float(new_upper)):
                         ebar.array = [max(0.0, float(new_upper) - _base)]
@@ -1793,7 +2018,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 bub_hline.y = [focus_y, focus_y]
             if bub_ribbon is not None and _has_iv:
                 lo, hi = float(new_lower), float(new_upper)
-                if is_forest:
+                if is_horiz:
                     bh = y_zoom_r * 0.12
                     y_c = float(new_y)
                     bub_ribbon.x = [lo, hi, hi, lo, lo]
@@ -1806,8 +2031,14 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             widget.layout.xaxis.range = [x_lo_p, x_hi_p]
             widget.layout.yaxis.range = [y_lo_p, y_hi_p]
 
-    def _nudge_overlay_point(key, shift_mult, sel):
-        """Apply one arrow-key step to the selected overlay point or error cap."""
+    def _nudge_selection(dx_units, dy_units, sel):
+        """Apply coalesced arrow-key steps to every selected overlay point.
+
+        ``dx_units``/``dy_units`` are net step counts from the client-side
+        accumulator (screen-up = +dy, Shift x10 already applied), so one call
+        may represent several held-key repeats. All selected points gang-move
+        with one model pass and one widget round-trip.
+        """
         with reactive.isolate():
             fid = file_id_rv()
         if fid is None:
@@ -1815,87 +2046,53 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         fs = pv.state.files.get(fid)
         if fs is None or fs.overlay is None:
             return
-        pid = sel.get("pid")
-        part = sel.get("part", "center")
-        pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
-        if pt is None:
+        pids = _sel_pids(sel)
+        if not pids:
             return
+        # Bound-part nudging only makes sense for a single selected point.
+        part = _sel_part(sel)
         base_step = _safe_float(input.overlay_arrow_step,
                                 _pixel_step_for_file(fs), "overlay_arrow_step")
-        step = base_step * shift_mult
-        dx = dy = 0.0
-        if key == "ArrowRight":
-            dx = step
-        elif key == "ArrowLeft":
-            dx = -step
-        elif key == "ArrowUp":
-            dy = step
-        elif key == "ArrowDown":
-            dy = -step
-        else:
-            return
+        dx = base_step * dx_units
+        dy = base_step * dy_units
 
-        sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
-        is_forest = fs.plot_type == "forest"
-        new_x = float(pt.x)
-        new_y = float(pt.y)
-        new_upper = pt.y_err_upper
-        new_lower = pt.y_err_lower
-        _u_ok = new_upper is not None and np.isfinite(float(new_upper))
-        _l_ok = new_lower is not None and np.isfinite(float(new_lower))
+        linked = _safe_bool(input.link_bounds, False, "link_bounds")
+        is_horiz = _fs_is_horizontal(fs)
+        lock_y = fs.plot_type == "forest"
+        by_pid = {p.point_id: p for p in fs.overlay.points()}
 
-        if is_forest:
-            # Interval runs horizontally and rows are fixed: left/right moves the
-            # value axis; the row (y) never changes.
-            delta = dx
-            if sym != "none":
-                new_x += delta
-                if _u_ok:
-                    new_upper = float(new_upper) + delta
-                if _l_ok:
-                    new_lower = float(new_lower) + delta
-            elif part == "upper":
-                new_upper = (float(new_upper) if _u_ok else float(pt.x)) + delta
-            elif part == "lower":
-                new_lower = (float(new_lower) if _l_ok else float(pt.x)) + delta
-            else:  # center
-                new_x += delta
-        else:
-            new_x += dx
-            if sym != "none":
-                # Gang-move: all three shift by the same dy, preserving CI offsets.
-                new_y += dy
-                if _u_ok:
-                    new_upper = float(new_upper) + dy
-                if _l_ok:
-                    new_lower = float(new_lower) + dy
-            elif part == "center":
-                new_y += dy
-            elif part == "upper":
-                new_upper = (float(new_upper) if _u_ok else float(pt.y)) + dy
-            elif part == "lower":
-                new_lower = (float(new_lower) if _l_ok else float(pt.y)) + dy
-
+        edits = []
         try:
-            fs.overlay.edit_point(pid, new_x, new_y)
-            if new_upper is not None:
-                fs.overlay.edit_err_upper(pid, float(new_upper))
-            if new_lower is not None:
-                fs.overlay.edit_err_lower(pid, float(new_lower))
+            for pid in pids:
+                pt = by_pid.get(pid)
+                if pt is None:
+                    continue
+                new = apply_nudge(
+                    _model_vals(fs, pt), dx, dy,
+                    part=part, linked=linked,
+                    is_horizontal=is_horiz, lock_y=lock_y,
+                )
+                fs.overlay.edit_point(pid, new.x, new.y)
+                if new.upper is not None:
+                    fs.overlay.edit_err_upper(pid, float(new.upper))
+                if new.lower is not None:
+                    fs.overlay.edit_err_lower(pid, float(new.lower))
+                edits.append((pid, new.x, new.y, new.upper, new.lower))
         except Exception as e:
-            _trace("nudge_overlay_point.error", error=repr(e))
+            _trace("nudge_selection.error", error=repr(e))
+            return
+        if not edits:
             return
 
-        ui.update_numeric("edit_point_x", value=round(new_x, 6))
-        ui.update_numeric("edit_point_y", value=round(new_y, 6))
-        if new_upper is not None and np.isfinite(float(new_upper)):
-            ui.update_numeric("edit_err_upper", value=round(float(new_upper), 6))
-        if new_lower is not None and np.isfinite(float(new_lower)):
-            ui.update_numeric("edit_err_lower", value=round(float(new_lower), 6))
+        # Reflect the anchor's new values (including half-width) into the
+        # edit panel. Exact floats so the echo events pass the guard.
+        anchor = _sel_anchor(sel)
+        if anchor is not None:
+            _sync_edit_inputs(fs, anchor)
         # Update the widget in-place — no figure rebuild, no _bump_overlay().
         # The overlay rebuilds on the next Apply/Reset/tab-switch, at which
         # point fs.overlay carries the fully-updated state.
-        _push_point_edit_to_widget(pid, new_x, new_y, new_upper, new_lower)
+        _push_point_edits_to_widget(edits)
 
     @reactive.effect
     @reactive.event(input.anchor_selected)
@@ -1923,13 +2120,21 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         _trace("anchor_nudge", payload=payload)
         if not isinstance(payload, dict):
             return
+        # Coalesced protocol: the client accumulates held-key repeats and
+        # sends net step counts (screen-up = +dy) with the Shift multiplier
+        # already applied.
+        try:
+            dx_units = int(payload.get("dx", 0) or 0)
+            dy_units = int(payload.get("dy", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if dx_units == 0 and dy_units == 0:
+            return
         with reactive.isolate():
             active_tab = input.main_nav()
             overlay_sel = selected_overlay_rv()
         if active_tab == "Overlay" and overlay_sel is not None:
-            key = payload.get("key")
-            shift_mult = int(payload.get("step", 1) or 1)
-            _nudge_overlay_point(key, shift_mult, overlay_sel)
+            _nudge_selection(dx_units, dy_units, overlay_sel)
             return
         with reactive.isolate():
             sel = selected_anchor()
@@ -1937,19 +2142,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         _trace("anchor_nudge.context", selected=sel)
         if sel not in ANCHOR_LABELS:
             return
-        key = payload.get("key")
-        step = int(payload.get("step", 1) or 1)
-        dx = dy = 0
-        if key == "ArrowUp":
-            dy = -step
-        elif key == "ArrowDown":
-            dy = step
-        elif key == "ArrowLeft":
-            dx = -step
-        elif key == "ArrowRight":
-            dx = step
-        else:
-            return
+        # Pixel-y grows downward, so screen-up (+dy) is a negative pixel move.
+        dx, dy = dx_units, -dy_units
         # Display "P1" maps to internal p3_pixel; "P2" maps to internal p2_pixel.
         display_to_internal = {"P1": "p3", "P2": "p2"}
         internal_key = display_to_internal.get(sel)
@@ -2252,7 +2446,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         # cheap empty figure. This is the biggest win for upload time — the
         # image used to be PNG-encoded twice (cal_plot + overlay_plot) on
         # every upload, even though the Overlay tab is hidden.
-        active = _safe_str(input.main_nav, "Calibrate", "main_nav")
+        active = _safe_str(input.main_nav, _DEFAULT_NAV, "main_nav")
         if active != "Overlay":
             return go.FigureWidget(go.Figure(layout=dict(height=620, autosize=True)))
         _trace("overlay_plot.render")
@@ -2319,7 +2513,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                     mask_active[name] = bool(input[_mask_id(name)]())
                 except Exception:
                     mask_active[name] = False
-        traces = build_overlay_traces(df, series_visibility=visibility,
+        traces = build_overlay_traces(df, orientation=fs.orientation,
+                                       series_visibility=visibility,
                                        series_colors=fs.series_color_overrides,
                                        plot_type=fs.plot_type)
 
@@ -2331,9 +2526,21 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             edit_point_ids=edited_ids,
             image_data_uri=_get_masked_image_uri(fid, mask_specs),
             plot_type=fs.plot_type,
+            orientation=fs.orientation,
         )
         _trace("overlay_plot.build", ms=int((time.perf_counter() - t0) * 1000))
-        return go.FigureWidget(fig)
+        widget = go.FigureWidget(fig)
+        try:
+            # Box Select drives multi-selection — make sure the modebar
+            # offers it even if a Plotly default ever drops it for this
+            # trace mix.
+            widget._config = {
+                **getattr(widget, "_config", {}),
+                "modeBarButtonsToAdd": ["select2d"],
+            }
+        except Exception as exc:
+            _trace("overlay_plot.config_error", error=repr(exc))
+        return widget
 
     @render_widget
     def zoom_bubble():
@@ -2359,8 +2566,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         cal = cal_dict_from_result(fs.detection_result)
         if not cal.get("applied"):
             return _empty
-        pid = sel.get("pid")
-        part = sel.get("part", "center")
+        pid = _sel_anchor(sel)
+        part = _sel_part(sel)
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return _empty
@@ -2385,6 +2592,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             fs.image_rgb, cal, pt, part,
             image_data_uri=bubble_uri,
             plot_type=fs.plot_type,
+            orientation=fs.orientation,
         )
         widget = go.FigureWidget(fig)
         try:
@@ -2683,8 +2891,16 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         cal = cal_dict_from_result(fs.detection_result)
         y_log_base = cal.get("y_log_base")
 
+        stats_df = df
+        if fs.plot_type == "bar" and _fs_is_horizontal(fs):
+            # Horizontal bars carry the value in `x` (errors already bracket
+            # it), so feed the σ machinery a swapped view and use the value
+            # axis's (x) log base.
+            stats_df = df.rename(columns={"x": "y", "y": "x"})
+            y_log_base = cal.get("x_log_base")
+
         display_df = build_time_series_display_df(
-            df, eb_type, percent, n_per_series, y_log_base, display_x
+            stats_df, eb_type, percent, n_per_series, y_log_base, display_x
         )
 
         # Top row: error bar type + percent + n inputs
@@ -2932,18 +3148,30 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         sel = selected_overlay_rv()
         if sel is None:
             return ui.tags.small(
-                "Click a point or error-bar cap in the overlay to select it.",
+                "Click a point (Shift-click or Box Select for several) to "
+                "select it.",
                 style="color:#888; display:block; margin-bottom:4px;",
+            )
+        pids = _sel_pids(sel)
+        anchor = _sel_anchor(sel)
+        if len(pids) > 1:
+            return ui.div(
+                ui.tags.small(
+                    ui.tags.strong(f"{len(pids)} points selected"),
+                    f" — arrows move all; typed edits apply to {anchor}.",
+                    style="color:#333;",
+                ),
+                style="margin-bottom:4px;",
             )
         part_label = {
             "center": "center point",
             "upper": "upper error bar",
             "lower": "lower error bar",
-        }.get(sel.get("part", "center"), "center point")
+        }.get(_sel_part(sel), "center point")
         return ui.div(
             ui.tags.small(
                 ui.tags.strong("Editing: "),
-                f"{sel['pid']} — {part_label}",
+                f"{anchor} — {part_label}",
                 style="color:#333;",
             ),
             style="margin-bottom:4px;",
@@ -2951,34 +3179,33 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
     @render.ui
     def edit_point_panel():
+        # Static across edits: rebuilds only when the file or its data
+        # change (pids are stable across edits/resets), never on
+        # overlay_revision — values flow through ui.update_numeric instead,
+        # which keeps typing and held arrow keys smooth.
         fid = file_id_rv()
-        _ = overlay_revision()
+        _ = csv_revision()
         fs = pv.state.files.get(fid) if fid is not None else None
         if fs is None or fs.overlay is None:
-            return ui.tags.em("Load a CSV to enable point editing.")
+            return ui.tags.em("Load data to enable point editing.")
         ids = [p.point_id for p in fs.overlay.points()]
         if not ids:
             return ui.tags.em("No points loaded.")
-        # Preserve current selection when panel rebuilds after an edit.
         with reactive.isolate():
             sel = selected_overlay_rv()
-        initial_pid = (sel.get("pid") if sel and sel.get("pid") in ids
+        initial_pid = (_sel_anchor(sel) if sel and _sel_anchor(sel) in ids
                        else ids[0])
         init_pt = next((p for p in fs.overlay.points()
                         if p.point_id == initial_pid), None)
-        init_x = float(init_pt.x) if init_pt else 0.0
-        init_y = float(init_pt.y) if init_pt else 0.0
-        init_upper = (float(init_pt.y_err_upper)
-                      if init_pt and init_pt.y_err_upper is not None
-                      and np.isfinite(init_pt.y_err_upper) else 0.0)
-        init_lower = (float(init_pt.y_err_lower)
-                      if init_pt and init_pt.y_err_lower is not None
-                      and np.isfinite(init_pt.y_err_lower) else 0.0)
-        # Preserve arrow-step and symmetry settings across rebuilds.
+        init = (_model_vals(fs, init_pt) if init_pt is not None
+                else PointVals(0.0, 0.0, None, None))
+        init_center = init.x if _fs_is_horizontal(fs) else init.y
+        init_hw = half_width_of(init_center, init.upper, init.lower)
+        # Preserve settings across rebuilds (file switches).
         with reactive.isolate():
             cur_step = _safe_float(input.overlay_arrow_step,
                                     _pixel_step_for_file(fs), "overlay_arrow_step")
-            cur_sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
+            cur_link = _safe_bool(input.link_bounds, False, "link_bounds")
         # Forest y is the fixed row index; editing it would break the even
         # row spacing, so the field is labelled locked and ignored on Apply.
         is_forest = fs.plot_type == "forest"
@@ -2989,31 +3216,48 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                             selected=initial_pid),
             ui.row(
                 ui.column(6, ui.input_numeric("edit_point_x", "x",
-                                               value=init_x)),
+                                               value=init.x)),
                 ui.column(6, ui.input_numeric("edit_point_y", y_label,
-                                               value=init_y)),
+                                               value=init.y)),
             ),
-            ui.row(
-                ui.column(6, ui.input_numeric("edit_err_lower", "y_err_lower",
-                                               value=init_lower)),
-                ui.column(6, ui.input_numeric("edit_err_upper", "y_err_upper",
-                                               value=init_upper)),
+            # Both interval representations stay in the DOM; the checkbox
+            # only toggles visibility, so no re-render on switch.
+            ui.panel_conditional(
+                "!input.link_bounds",
+                ui.row(
+                    ui.column(6, ui.input_numeric(
+                        "edit_err_lower", "Lower bound",
+                        value=init.lower if init.lower is not None else 0.0)),
+                    ui.column(6, ui.input_numeric(
+                        "edit_err_upper", "Upper bound",
+                        value=init.upper if init.upper is not None else 0.0)),
+                ),
+            ),
+            ui.panel_conditional(
+                "input.link_bounds",
+                ui.row(
+                    ui.column(6, ui.input_numeric(
+                        "edit_half_width", "± half-width",
+                        value=init_hw if init_hw is not None else 0.0,
+                        min=0.0)),
+                ),
             ),
             ui.row(
                 ui.column(6, ui.input_numeric(
                     "overlay_arrow_step", "Arrow step",
                     value=cur_step, step=0.01, min=0.0001,
                 )),
-                ui.column(6, ui.input_select(
-                    "force_symmetry", "Force symmetry",
-                    choices={"none": "None", "upper": "Upper",
-                             "lower": "Lower", "both": "Upper & Lower"},
-                    selected=cur_sym,
-                )),
+                ui.column(
+                    6,
+                    ui.input_checkbox("link_bounds", "Symmetric interval",
+                                       value=cur_link),
+                    style="display:flex; align-items:flex-end; padding-bottom:8px;",
+                ),
             ),
             ui.tags.small(
-                "Arrow keys: with symmetry ≠ None, moves point+upper+lower together "
-                "(Shift = 10×). Symmetry derivation applies only on Apply or typed edit.",
+                "Arrow keys nudge the selection (Shift = 10×); moving the "
+                "center keeps the interval width. With a symmetric interval, "
+                "nudging one bound mirrors the other.",
                 style="color:#666; display:block; margin-bottom:4px;",
             ),
             ui.input_action_button("apply_point_edit", "Apply edit",
@@ -3021,6 +3265,37 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             ui.input_action_button("reset_point_edit", "Reset point",
                                     class_="btn-sm"),
         )
+
+    @reactive.effect
+    def _update_reset_button_label():
+        """`Reset point` becomes `Reset selected (N)` for multi-selections."""
+        sel = selected_overlay_rv()
+        n = len(_sel_pids(sel))
+        label = f"Reset selected ({n})" if n > 1 else "Reset point"
+        ui.update_action_button("reset_point_edit", label=label)
+
+    @reactive.effect
+    @reactive.event(input.link_bounds)
+    def _seed_half_width_on_link():
+        """Toggling the symmetric-interval checkbox seeds the half-width from
+        the current bounds (mean of the two offsets when asymmetric). The
+        bounds themselves only change on the next edit, not on the toggle."""
+        if not _safe_bool(input.link_bounds, False, "link_bounds"):
+            return
+        with reactive.isolate():
+            fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.overlay is None:
+            return
+        pid = _safe_str(input.edit_point_id, "", "edit_point_id")
+        pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
+        if pt is None:
+            return
+        vals = _model_vals(fs, pt)
+        center = vals.x if _fs_is_horizontal(fs) else vals.y
+        hw = half_width_of(center, vals.upper, vals.lower)
+        if hw is not None:
+            ui.update_numeric("edit_half_width", value=hw)
 
     # Whenever the user changes the selected point, populate the inputs with
     # the current values so editing is incremental.
@@ -3035,17 +3310,17 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return
-        ui.update_numeric("edit_point_x", value=float(pt.x))
-        ui.update_numeric("edit_point_y", value=float(pt.y))
-        if pt.y_err_lower is not None and np.isfinite(pt.y_err_lower):
-            ui.update_numeric("edit_err_lower", value=float(pt.y_err_lower))
-        if pt.y_err_upper is not None and np.isfinite(pt.y_err_upper):
-            ui.update_numeric("edit_err_upper", value=float(pt.y_err_upper))
+        _sync_edit_inputs(fs, pid)
         # Sync selected_overlay_rv so arrow keys work when using the dropdown.
+        # A genuine dropdown change (anchor differs) replaces the selection
+        # with this single point; the programmatic update_select echo after a
+        # click/box-select (anchor already matches) must NOT collapse a
+        # multi-selection.
         with reactive.isolate():
             current_sel = selected_overlay_rv()
-        if current_sel is None or current_sel.get("pid") != pid:
-            selected_overlay_rv.set({"pid": pid, "part": "center"})
+        if current_sel is None or _sel_anchor(current_sel) != pid:
+            selected_overlay_rv.set({"pids": [pid], "anchor": pid,
+                                     "part": "center"})
 
     @reactive.effect
     @reactive.event(input.apply_point_edit)
@@ -3058,24 +3333,29 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         try:
             new_x = float(input.edit_point_x() or 0)
             new_y = float(input.edit_point_y() or 0)
-            new_upper = float(input.edit_err_upper() or 0)
-            new_lower = float(input.edit_err_lower() or 0)
             if fs.plot_type == "forest":
                 # Row index is fixed — keep the point on its evenly-spaced row.
                 cur_pt = next((p for p in fs.overlay.points()
                                if p.point_id == pid), None)
                 if cur_pt is not None:
                     new_y = float(cur_pt.y)
-            sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
-            new_x, new_y, new_upper, new_lower = _apply_symmetry(
-                new_x, new_y, new_upper, new_lower, sym)
+            if _safe_bool(input.link_bounds, False, "link_bounds"):
+                hw = _safe_float(input.edit_half_width, 0.0, "edit_half_width")
+                center = new_x if _fs_is_horizontal(fs) else new_y
+                new_lower, new_upper = linked_bounds(center, hw)
+            else:
+                new_upper = float(input.edit_err_upper() or 0)
+                new_lower = float(input.edit_err_lower() or 0)
             fs.overlay.edit_point(pid, new_x, new_y)
-            fs.overlay.edit_err_lower(pid, float(new_lower) if new_lower is not None else 0.0)
-            fs.overlay.edit_err_upper(pid, float(new_upper) if new_upper is not None else 0.0)
+            fs.overlay.edit_err_lower(pid, float(new_lower))
+            fs.overlay.edit_err_upper(pid, float(new_upper))
         except Exception as e:
             ui.notification_show(f"Edit failed: {e}", type="error")
             return
         _bump_overlay()
+        # The panel no longer rebuilds on overlay_revision — reflect any
+        # derived values (linked bounds / half-width) back into the inputs.
+        _sync_edit_inputs(fs, pid)
 
     @reactive.effect
     @reactive.event(input.reset_point_edit)
@@ -3084,27 +3364,31 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         fs = pv.state.files.get(fid) if fid is not None else None
         if fs is None or fs.overlay is None:
             return
-        pid = input.edit_point_id()
+        with reactive.isolate():
+            sel = selected_overlay_rv()
+        pids = _sel_pids(sel) or [input.edit_point_id()]
         try:
-            fs.overlay.reset_point(pid)
+            fs.overlay.reset_points(pids)
         except Exception as e:
             ui.notification_show(f"Reset failed: {e}", type="error")
             return
         _bump_overlay()
+        _sync_edit_inputs(fs, _sel_anchor(sel) or pids[-1])
 
     @reactive.effect
     @reactive.event(
         input.edit_point_x, input.edit_point_y,
         input.edit_err_upper, input.edit_err_lower,
+        input.edit_half_width,
     )
     def _live_update_point_inputs():
         """Push input changes to the overlay widget immediately (no full rebuild).
 
-        Fires whenever any of the four numeric edit inputs change — whether
-        from the user typing, arrowing, or a programmatic ui.update_numeric.
-        The model-value comparison guards against spurious updates from the
-        latter: if the input matches the stored model value the change came
-        from a populate call, so we skip.
+        Fires whenever any of the numeric edit inputs change — whether from
+        the user typing, arrowing, or a programmatic ui.update_numeric. The
+        model-value comparison guards against spurious updates from the
+        latter: if the inputs match the stored model values the change came
+        from a populate/sync call, so we skip.
         """
         with reactive.isolate():
             fid = file_id_rv()
@@ -3117,8 +3401,6 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             pid = input.edit_point_id()
             new_x = float(input.edit_point_x())
             new_y = float(input.edit_point_y())
-            new_upper = float(input.edit_err_upper())
-            new_lower = float(input.edit_err_lower())
         except Exception as exc:
             _trace("live_update.read_inputs_error", error=repr(exc))
             return
@@ -3127,18 +3409,42 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         pt = next((p for p in fs.overlay.points() if p.point_id == pid), None)
         if pt is None:
             return
-        cur_x = float(pt.x)
-        cur_y = float(pt.y)
-        cur_upper = float(pt.y_err_upper) if pt.y_err_upper is not None else 0.0
-        cur_lower = float(pt.y_err_lower) if pt.y_err_lower is not None else 0.0
-        # Skip when nothing changed vs the model (programmatic populate).
-        if (abs(new_x - cur_x) < 1e-10 and abs(new_y - cur_y) < 1e-10
-                and abs(new_upper - cur_upper) < 1e-10
-                and abs(new_lower - cur_lower) < 1e-10):
-            return
-        sym = _safe_str(input.force_symmetry, "none", "force_symmetry")
-        new_x, new_y, new_upper, new_lower = _apply_symmetry(
-            new_x, new_y, new_upper, new_lower, sym)
+        cur = _model_vals(fs, pt)
+        linked = _safe_bool(input.link_bounds, False, "link_bounds")
+        is_horiz = _fs_is_horizontal(fs)
+
+        if linked:
+            try:
+                hw = float(input.edit_half_width())
+            except Exception as exc:
+                _trace("live_update.read_inputs_error", error=repr(exc))
+                return
+            cur_center = cur.x if is_horiz else cur.y
+            cur_hw = half_width_of(cur_center, cur.upper, cur.lower)
+            hw_echo = ((cur_hw is None and hw == 0.0)
+                       or (cur_hw is not None and abs(hw - cur_hw) < 1e-10))
+            if (abs(new_x - cur.x) < 1e-10 and abs(new_y - cur.y) < 1e-10
+                    and hw_echo):
+                return
+            if cur_hw is None and hw == 0.0:
+                # No interval on this point and none requested.
+                new_lower = new_upper = None
+            else:
+                center = new_x if is_horiz else new_y
+                new_lower, new_upper = linked_bounds(center, hw)
+        else:
+            try:
+                new_upper = float(input.edit_err_upper())
+                new_lower = float(input.edit_err_lower())
+            except Exception as exc:
+                _trace("live_update.read_inputs_error", error=repr(exc))
+                return
+            cur_upper = cur.upper if cur.upper is not None else 0.0
+            cur_lower = cur.lower if cur.lower is not None else 0.0
+            if (abs(new_x - cur.x) < 1e-10 and abs(new_y - cur.y) < 1e-10
+                    and abs(new_upper - cur_upper) < 1e-10
+                    and abs(new_lower - cur_lower) < 1e-10):
+                return
         # Persist to model silently — no _bump_overlay, widget updated below.
         try:
             fs.overlay.edit_point(pid, new_x, new_y)
@@ -3149,14 +3455,18 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         except Exception as exc:
             _user_error("Live point edit failed", exc)
             return
-        # If symmetry derived a new value for the *other* bar, reflect it in
-        # the corresponding input so the user sees the derived number.
-        if sym == "upper" and new_lower is not None and np.isfinite(float(new_lower)):
-            ui.update_numeric("edit_err_lower", value=round(float(new_lower), 6))
-        elif sym == "lower" and new_upper is not None and np.isfinite(float(new_upper)):
-            ui.update_numeric("edit_err_upper", value=round(float(new_upper), 6))
-        elif sym == "both":
-            ui.update_numeric("edit_point_y", value=round(float(new_y), 6))
+        # Keep the hidden representation in sync so switching the checkbox
+        # shows current numbers. Exact floats → the echo passes the guard.
+        if linked:
+            if new_upper is not None:
+                ui.update_numeric("edit_err_upper", value=float(new_upper))
+            if new_lower is not None:
+                ui.update_numeric("edit_err_lower", value=float(new_lower))
+        else:
+            center = new_x if is_horiz else new_y
+            hw_now = half_width_of(center, new_upper, new_lower)
+            if hw_now is not None:
+                ui.update_numeric("edit_half_width", value=hw_now)
         _push_point_edit_to_widget(pid, new_x, new_y, new_upper, new_lower)
 
     # ------------------------------------------------------------------
@@ -3168,16 +3478,44 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     def _on_overlay_click():
         """Handle a data-point click forwarded from JS via Shiny.setInputValue.
 
-        The JS plotly_click handler in _ANCHOR_KEY_SCRIPT sends the pid and
-        part ("center"/"upper"/"lower") extracted from customdata. We verify
-        the pid exists in the current overlay before updating the selection.
+        The JS plotly_click handler in _ANCHOR_KEY_SCRIPT sends the pid,
+        part ("center"/"upper"/"lower"), and whether Shift was held. Plain
+        clicks replace the selection; shift-clicks toggle membership in the
+        multi-selection (see ``_update_selection``).
         """
         payload = input.overlay_click()
         if not isinstance(payload, dict):
             return
         pid = payload.get("pid")
         part = payload.get("part", "center")
+        shift = bool(payload.get("shift", False))
         if not pid:
+            return
+        with reactive.isolate():
+            fid = file_id_rv()
+            cur_sel = selected_overlay_rv()
+        if fid is None:
+            return
+        fs = pv.state.files.get(fid)
+        if fs is None or fs.overlay is None:
+            return
+        if not any(p.point_id == pid for p in fs.overlay.points()):
+            return
+        new_sel = _update_selection(cur_sel, pid, part, shift)
+        anchor = _sel_anchor(new_sel)
+        if anchor is not None:
+            ui.update_select("edit_point_id", selected=anchor)
+        selected_overlay_rv.set(new_sel)
+
+    @reactive.effect
+    @reactive.event(input.overlay_box_select)
+    def _on_overlay_box_select():
+        """Box/lasso select from Plotly replaces the selection with the set."""
+        payload = input.overlay_box_select()
+        if not isinstance(payload, dict):
+            return
+        pids = payload.get("pids")
+        if not isinstance(pids, list) or not pids:
             return
         with reactive.isolate():
             fid = file_id_rv()
@@ -3186,10 +3524,14 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         fs = pv.state.files.get(fid)
         if fs is None or fs.overlay is None:
             return
-        if not any(p.point_id == pid for p in fs.overlay.points()):
+        known = {p.point_id for p in fs.overlay.points()}
+        valid = [str(p) for p in pids if str(p) in known]
+        if not valid:
             return
-        ui.update_select("edit_point_id", selected=pid)
-        selected_overlay_rv.set({"pid": pid, "part": part})
+        anchor = valid[-1]
+        ui.update_select("edit_point_id", selected=anchor)
+        selected_overlay_rv.set({"pids": valid, "anchor": anchor,
+                                 "part": "center"})
 
     @reactive.effect
     @reactive.event(input.overlay_deselect)
@@ -3203,7 +3545,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
     @reactive.effect
     async def _sync_bubble_visibility():
         sel = selected_overlay_rv()
-        active_tab = _safe_str(input.main_nav, "Calibrate", "main_nav")
+        active_tab = _safe_str(input.main_nav, _DEFAULT_NAV, "main_nav")
         show = sel is not None and active_tab == "Overlay"
         await session.send_custom_message("pv_bubble_show", {"show": show})
 

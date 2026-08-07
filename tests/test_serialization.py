@@ -276,3 +276,49 @@ def test_round_trip_preserves_series_states(tmp_path: Path):
     # SeriesState fields survive.
     name = series_names_before[0]
     assert fs2.series_states[name].color_hex == fs.series_states[name].color_hex
+
+
+# ----------------------------------------------------------------------
+# plot_type / orientation persistence
+# ----------------------------------------------------------------------
+
+def test_round_trip_preserves_plot_type_and_orientation(tmp_path: Path):
+    app = _seed_app()
+    fid = next(iter(app.state.files))
+    app.state.files[fid].plot_type = "bar"
+    app.state.files[fid].orientation = "horizontal"
+
+    path = tmp_path / "s.pvsession"
+    app.save_session(path)
+
+    app2 = PlotVerifyApp()
+    app2.load_session(path)
+    fs2 = app2.state.files[fid]
+    assert fs2.plot_type == "bar"
+    assert fs2.orientation == "horizontal"
+
+
+def test_legacy_manifest_without_plot_type_loads_with_defaults(tmp_path: Path):
+    """Manifests written before the plot_type/orientation keys still load."""
+    app = _seed_app()
+    path = tmp_path / "s.pvsession"
+    app.save_session(path)
+
+    # Strip the new keys to simulate an old session file.
+    with zipfile.ZipFile(path) as zf:
+        manifest = json.loads(zf.read("manifest.json"))
+        payload = {n: zf.read(n) for n in zf.namelist() if n != "manifest.json"}
+    for entry in manifest["files"].values():
+        entry.pop("plot_type", None)
+        entry.pop("orientation", None)
+    stripped = tmp_path / "legacy.pvsession"
+    with zipfile.ZipFile(stripped, "w") as zf:
+        zf.writestr("manifest.json", json.dumps(manifest))
+        for name, data in payload.items():
+            zf.writestr(name, data)
+
+    app2 = PlotVerifyApp()
+    app2.load_session(stripped)
+    fs2 = next(iter(app2.state.files.values()))
+    assert fs2.plot_type == "time_series"
+    assert fs2.orientation == "vertical"

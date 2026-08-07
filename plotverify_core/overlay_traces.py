@@ -16,6 +16,17 @@ import pandas as pd
 from .colors import FALLBACK_HEX, hex_complement, is_valid_hex
 
 
+def is_horizontal_layout(plot_type: str, orientation: str = "vertical") -> bool:
+    """True when the value axis runs along x (intervals bracket ``x``).
+
+    Forest plots are inherently horizontal; bar and box plots are horizontal
+    only when the file's ``orientation`` says so.
+    """
+    return plot_type == "forest" or (
+        orientation == "horizontal" and plot_type in ("bar", "box")
+    )
+
+
 @dataclass
 class OverlayTrace:
     """One series-level trace with optional error bars and ribbon coordinates."""
@@ -55,20 +66,23 @@ def build_overlay_traces(
     series_visibility: Optional[Dict[str, bool]] = None,
     series_colors: Optional[Dict[str, str]] = None,
     plot_type: str = "time_series",
+    orientation: str = "vertical",
 ) -> List[OverlayTrace]:
     """Build traces for every distinct series in ``df``.
 
     ``series_visibility`` defaults to True for every series; ``series_colors``
     overrides the per-series CSV color. Series with no rows are skipped.
 
-    In forest mode (``plot_type == "forest"``) the interval brackets the value
-    axis ``x`` rather than ``y``, so the error offsets are measured from ``x``
-    and no vertical ribbon is built; ``is_summary``/``status`` are carried
-    through for the renderer.
+    In horizontal layouts (forest, or bar/box with ``orientation ==
+    "horizontal"``) the interval brackets the value axis ``x`` rather than
+    ``y``, so the error offsets are measured from ``x`` and no vertical
+    ribbon is built; ``is_summary``/``status`` are carried through for the
+    renderer.
     """
     series_visibility = series_visibility or {}
     series_colors = series_colors or {}
     is_forest = plot_type == "forest"
+    is_horiz = is_horizontal_layout(plot_type, orientation)
     is_bar = plot_type == "bar"
     is_box = plot_type == "box"
     is_km = plot_type == "kaplan_meier"
@@ -98,8 +112,8 @@ def build_overlay_traces(
         el = sdf["y_err_lower"].to_numpy(dtype=float) if "y_err_lower" in sdf.columns else np.full(len(sdf), np.nan)
         has_err = np.isfinite(eu) & np.isfinite(el)
 
-        # The interval brackets the value axis: `x` in forest mode, else `y`.
-        base = x if is_forest else y
+        # The interval brackets the value axis: `x` in horizontal layouts.
+        base = x if is_horiz else y
         err_plus = np.where(has_err, eu - base, 0.0)
         err_minus = np.where(has_err, base - el, 0.0)
 
