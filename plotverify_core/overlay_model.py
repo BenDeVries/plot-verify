@@ -173,6 +173,35 @@ class EditableOverlay:
         p.edit_timestamp = None
         p.edit_type = None
 
+    # ---- batch mutate API ---------------------------------------------
+
+    def nudge_points(self, point_ids, dx: float, dy: float,
+                     *, shift_bounds: bool = True) -> None:
+        """Gang-move: shift each point by (dx, dy), bounds by dy when present.
+
+        Each point keeps its own audit entry (``edit_type`` per mutator).
+        Raises KeyError on an unknown point id (nothing is partially applied
+        before validation).
+        """
+        missing = [pid for pid in point_ids if pid not in self._points]
+        if missing:
+            raise KeyError(f"Unknown point id(s): {missing}")
+        for pid in point_ids:
+            p = self._points[pid]
+            self.edit_point(pid, p.x + dx, p.y + dy)
+            if shift_bounds and p.y_err_upper is not None:
+                self.edit_err_upper(pid, p.y_err_upper + dy)
+            if shift_bounds and p.y_err_lower is not None:
+                self.edit_err_lower(pid, p.y_err_lower + dy)
+
+    def reset_points(self, point_ids) -> None:
+        """Reset several points at once; validates ids before mutating."""
+        missing = [pid for pid in point_ids if pid not in self._points]
+        if missing:
+            raise KeyError(f"Unknown point id(s): {missing}")
+        for pid in point_ids:
+            self.reset_point(pid)
+
     # ---- export -------------------------------------------------------
 
     def to_dataframe(self, *, include_audit_cols: bool = False) -> pd.DataFrame:

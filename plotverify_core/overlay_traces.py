@@ -16,6 +16,17 @@ import pandas as pd
 from .colors import FALLBACK_HEX, hex_complement, is_valid_hex
 
 
+def is_horizontal_layout(plot_type: str, orientation: str = "vertical") -> bool:
+    """True when the value axis runs along x (intervals bracket ``x``).
+
+    Forest plots are inherently horizontal; bar and box plots are horizontal
+    only when the file's ``orientation`` says so.
+    """
+    return plot_type == "forest" or (
+        orientation == "horizontal" and plot_type in ("bar", "box")
+    )
+
+
 @dataclass
 class OverlayTrace:
     """One series-level trace with optional error bars and ribbon coordinates."""
@@ -41,6 +52,12 @@ class OverlayTrace:
     # for time-series / scatter traces.
     is_summary: Optional[np.ndarray] = None
     status: Optional[List[str]] = None
+    # Box-plot quartile arrays (one entry per point). None for non-box traces.
+    box_q1: Optional[np.ndarray] = None
+    box_median: Optional[np.ndarray] = None
+    box_q3: Optional[np.ndarray] = None
+    # Kaplan-Meier at-risk count per point. None for non-KM traces.
+    at_risk: Optional[np.ndarray] = None
 
 
 def build_overlay_traces(
@@ -49,20 +66,26 @@ def build_overlay_traces(
     series_visibility: Optional[Dict[str, bool]] = None,
     series_colors: Optional[Dict[str, str]] = None,
     plot_type: str = "time_series",
+    orientation: str = "vertical",
 ) -> List[OverlayTrace]:
     """Build traces for every distinct series in ``df``.
 
     ``series_visibility`` defaults to True for every series; ``series_colors``
     overrides the per-series CSV color. Series with no rows are skipped.
 
-    In forest mode (``plot_type == "forest"``) the interval brackets the value
-    axis ``x`` rather than ``y``, so the error offsets are measured from ``x``
-    and no vertical ribbon is built; ``is_summary``/``status`` are carried
-    through for the renderer.
+    In horizontal layouts (forest, or bar/box with ``orientation ==
+    "horizontal"``) the interval brackets the value axis ``x`` rather than
+    ``y``, so the error offsets are measured from ``x`` and no vertical
+    ribbon is built; ``is_summary``/``status`` are carried through for the
+    renderer.
     """
     series_visibility = series_visibility or {}
     series_colors = series_colors or {}
     is_forest = plot_type == "forest"
+    is_horiz = is_horizontal_layout(plot_type, orientation)
+    is_bar = plot_type == "bar"
+    is_box = plot_type == "box"
+    is_km = plot_type == "kaplan_meier"
 
     traces: List[OverlayTrace] = []
     for series_name in df["series"].drop_duplicates().tolist():
@@ -89,13 +112,13 @@ def build_overlay_traces(
         el = sdf["y_err_lower"].to_numpy(dtype=float) if "y_err_lower" in sdf.columns else np.full(len(sdf), np.nan)
         has_err = np.isfinite(eu) & np.isfinite(el)
 
-        # The interval brackets the value axis: `x` in forest mode, else `y`.
-        base = x if is_forest else y
+        # The interval brackets the value axis: `x` in horizontal layouts.
+        base = x if is_horiz else y
         err_plus = np.where(has_err, eu - base, 0.0)
         err_minus = np.where(has_err, base - el, 0.0)
 
-        # A vertical ribbon fill only makes sense with a numeric y-axis.
-        if has_err.any() and not is_forest:
+        # A vertical ribbon fill only makes sense for continuous y-axis types.
+        if has_err.any() and not is_forest and not is_bar and not is_box:
             x_rib = x[has_err]
             y_upper = eu[has_err]
             y_lower = el[has_err]
@@ -108,7 +131,7 @@ def build_overlay_traces(
             y_upper = np.array([], dtype=float)
             y_lower = np.array([], dtype=float)
 
-        if is_forest:
+        if is_forest or is_box or is_km:
             is_summary_arr = (
                 sdf["is_summary"].to_numpy(dtype=bool)
                 if "is_summary" in sdf.columns else np.zeros(len(sdf), dtype=bool)
@@ -120,6 +143,21 @@ def build_overlay_traces(
         else:
             is_summary_arr = None
             status_arr = None
+
+        box_q1_arr = None
+        box_median_arr = None
+        box_q3_arr = None
+        if is_box:
+            if "box_q1" in sdf.columns:
+                box_q1_arr = sdf["box_q1"].to_numpy(dtype=float)
+            if "box_median" in sdf.columns:
+                box_median_arr = sdf["box_median"].to_numpy(dtype=float)
+            if "box_q3" in sdf.columns:
+                box_q3_arr = sdf["box_q3"].to_numpy(dtype=float)
+
+        at_risk_arr = None
+        if is_km and "at_risk" in sdf.columns:
+            at_risk_arr = sdf["at_risk"].to_numpy(dtype=float)
 
         traces.append(OverlayTrace(
             series=str(series_name),
@@ -136,6 +174,10 @@ def build_overlay_traces(
             point_ids=point_ids,
             is_summary=is_summary_arr,
             status=status_arr,
+            box_q1=box_q1_arr,
+            box_median=box_median_arr,
+            box_q3=box_q3_arr,
+            at_risk=at_risk_arr,
         ))
 
     return traces

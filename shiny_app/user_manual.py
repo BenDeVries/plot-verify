@@ -3,21 +3,32 @@
 A single ``ui.nav_panel`` containing an accordion of reference sections that
 documents every tool in the workflow. All sections start collapsed.
 
-OCR-only sections (auto-detection, axis-frame, label bands, detection
-settings, calibration points table) are omitted when EasyOCR is not available.
-``ocr_available()`` is called at import time — on the ``shiny-manual`` Pyodide
-deployment EasyOCR is not installed so it returns False. The same source file
-therefore works on both branches without modification.
+Two gates shape the section list so the same source file serves every
+deployment:
+
+- OCR-only sections (auto-detection, axis-frame, label bands, detection
+  settings, calibration points table) require a working EasyOCR install
+  (``axis_pipeline.ocr_available()``).
+- Calibration/plot-type/series-color sections are omitted entirely in
+  JSON-only mode (``runtime_flags.json_only_mode()``) — the shinylive
+  Pyodide deployment, where the Calibrate tab does not exist and the Agent
+  JSON supplies calibration, plot type and orientation.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from shiny import ui
+
+from .runtime_flags import json_only_mode
 
 try:
     from axis_pipeline import ocr_available
     _OCR_AVAILABLE = ocr_available()
 except ImportError:
     _OCR_AVAILABLE = False
+
+_JSON_ONLY = json_only_mode()
 
 
 def _p(*body) -> ui.Tag:
@@ -39,7 +50,28 @@ def _section(title: str, value: str, *body) -> ui.Tag:
     return ui.accordion_panel(title, *body, value=value)
 
 
-def _getting_started() -> ui.Tag:
+def _getting_started(json_only: bool = False) -> ui.Tag:
+    if json_only:
+        return _section(
+            "Getting started",
+            "getting_started",
+            _p("This deployment verifies AI-extracted plot data from a "
+               "single Agent JSON file. Upload a ", _code(".json"),
+               " file from the sidebar (or paste the JSON text) and click ",
+               ui.tags.strong("Import JSON"), "."),
+            _ul(
+                "The JSON carries everything: the plot image (embedded as "
+                "a data URI), the extracted data rows, the axis "
+                "calibration, the plot type, and the orientation.",
+                "After import you land directly on the Overlay tab with "
+                "the data drawn over the source image — review, adjust "
+                "points, and export.",
+                "A JSON without an axes block cannot be calibrated here "
+                "and is rejected with an error.",
+                "The sidebar status block shows the active image filename, "
+                "dimensions, row count, series count, and review status.",
+            ),
+        )
     return _section(
         "Getting started",
         "getting_started",
@@ -328,6 +360,31 @@ def _plot_type() -> ui.Tag:
                 "Auto-selected when a forest CSV is loaded. See the ",
                 ui.tags.em("Forest plots"), " section below.",
             ),
+            ui.TagList(
+                ui.tags.strong("Bar chart"),
+                " — one marker per bar top with error bars; the Dashboard "
+                "reuses the time-series σ table.",
+            ),
+            ui.TagList(
+                ui.tags.strong("Box plot"),
+                " — box/median/whisker glyphs from ", _code("box_q1"),
+                " / ", _code("box_median"), " / ", _code("box_q3"),
+                " plus the interval bounds as whisker ends; rows with ",
+                _code("status = outlier"), " render as open diamonds.",
+            ),
+            ui.TagList(
+                ui.tags.strong("Kaplan–Meier"),
+                " — step curves with a step-shaped confidence band, "
+                "censoring tick marks (", _code("status = censored"),
+                "), and per-point ", _code("at_risk"), " counts.",
+            ),
+            ui.TagList(
+                ui.tags.strong("Orientation"),
+                " — bar and box plots can render horizontally (value axis "
+                "along x). Orientation comes from the Agent JSON's ",
+                _code("orientation"),
+                " field; forest plots are always horizontal.",
+            ),
         ),
     )
 
@@ -492,13 +549,96 @@ def _mask_preview() -> ui.Tag:
     )
 
 
+def _agent_json() -> ui.Tag:
+    _row = ui.tags.tr
+    _td = ui.tags.td
+
+    def _field(name, desc):
+        return _row(_td(_code(name), style="white-space:nowrap;"),
+                    _td(desc))
+
+    return _section(
+        "Agent JSON — import, export & schema",
+        "agent_json",
+        _p("A single JSON file can carry a complete verification job: the "
+           "plot image, the extracted data rows, the axis calibration, the "
+           "plot type, and the orientation. Upload or paste it in the "
+           "sidebar and click ", ui.tags.strong("Import JSON"),
+           "; export the corrected state with ",
+           ui.tags.strong("Export as JSON"), " on the Overlay tab."),
+        ui.tags.table(
+            ui.tags.thead(_row(ui.tags.th("Field"), ui.tags.th("Meaning"))),
+            ui.tags.tbody(
+                _field("schema_version",
+                       'Any "1.x" is accepted; exports are written as "1.1".'),
+                _field("image",
+                       ui.TagList(
+                           _code("filename"), ", ", _code("width_px"), ", ",
+                           _code("height_px"), ", and the image itself as a "
+                           "base64 ", _code("data_uri"),
+                           ". If the declared width differs from the decoded "
+                           "image (e.g. a large image was auto-downscaled), "
+                           "the calibration anchors are rescaled to match "
+                           "and a warning reports the factor.")),
+                _field("plot_type",
+                       ui.TagList(
+                           "One of ", _code("scatter"), ", ",
+                           _code("line_timeseries"), ", ", _code("error_bar"),
+                           ", ", _code("forest"), ", ", _code("bar"), ", ",
+                           _code("box"), ", ", _code("kaplan_meier"), ".")),
+                _field("orientation",
+                       ui.TagList(
+                           _code('"vertical"'), " (default) or ",
+                           _code('"horizontal"'),
+                           " — horizontal applies to bar and box plots "
+                           "(value axis along x); forest plots are always "
+                           "horizontal.")),
+                _field("axes.x / axes.y",
+                       ui.TagList(
+                           _code('scale: "linear"|"log"'), ", optional ",
+                           _code("log_base"),
+                           " (a number > 1 or ", _code('"e"'),
+                           "; defaults to 10 for log axes), and ",
+                           _code("calibration"),
+                           ": a list of at least two ",
+                           _code("{pixel, value}"),
+                           " pairs mapping pixel positions to data values.")),
+                _field("rows",
+                       ui.TagList(
+                           "Data records in image-axis coordinates: ",
+                           _code("series"), ", ", _code("x"), ", ",
+                           _code("y"), ", ", _code("y_err_lower"), ", ",
+                           _code("y_err_upper"),
+                           " (absolute bounds), plus per-plot-type extras (",
+                           _code("box_q1"), "/", _code("box_median"), "/",
+                           _code("box_q3"), ", ", _code("at_risk"), ", ",
+                           _code("is_summary"), ", ", _code("status"),
+                           "). In horizontal layouts the value lives in ",
+                           _code("x"), " and ", _code("y_err_*"),
+                           " bracket ", _code("x"), "; forest-style ",
+                           _code("value"), "/", _code("value_err_*"),
+                           " aliases are accepted for any horizontal "
+                           "layout.")),
+                _field("series",
+                       ui.TagList("Per-series display colors: ",
+                                  _code("{key, color}"), " entries.")),
+            ),
+            class_="table table-sm",
+        ),
+        _p("A JSON without an ", _code("axes"),
+           " block cannot be calibrated — on the JSON-only deployment the "
+           "import is rejected with an error; on the full app you can still "
+           "calibrate manually from the Calibrate tab."),
+    )
+
+
 def _overlay_editing() -> ui.Tag:
     return _section(
         "Overlay editing",
         "overlay_editing",
-        _p("The Overlay tab draws the CSV data in data coordinates on top "
-           "of the (optionally masked) source image. Use it to verify and "
-           "correct individual points."),
+        _p("The Overlay tab draws the extracted data in data coordinates on "
+           "top of the (optionally masked) source image. Use it to verify "
+           "and correct individual points."),
         _ul(
             "Click a point's center, upper error-bar cap, or lower "
             "error-bar cap to select it. Selection populates the "
@@ -507,13 +647,25 @@ def _overlay_editing() -> ui.Tag:
             ui.TagList(
                 ui.tags.strong("Edit a point"), " panel — dropdown to "
                 "choose the point, then numeric inputs for ", _code("x"),
-                ", ", _code("y"), ", ", _code("y_err_upper"),
-                ", ", _code("y_err_lower"),
+                " and ", _code("y"),
                 ". Typed edits update the overlay live (no Apply needed); ",
                 ui.tags.strong("Apply edit"),
                 " is provided for explicit confirmation, and ",
                 ui.tags.strong("Reset point"),
-                " restores the original CSV values for that point.",
+                " restores the original values (it becomes ",
+                _code("Reset selected (N)"),
+                " when several points are selected).",
+            ),
+            ui.TagList(
+                ui.tags.strong("Symmetric interval"),
+                " — with the checkbox ON the interval is edited as "
+                "center ± ", _code("half-width"),
+                " (one number instead of two bounds); nudging one bound "
+                "mirrors the other about the center. With it OFF you edit "
+                "the absolute ", _code("Lower bound"), " and ",
+                _code("Upper bound"),
+                " independently. Toggling it on seeds the half-width from "
+                "the current bounds (their mean offset when asymmetric).",
             ),
             ui.TagList(
                 ui.tags.strong("Arrow step"),
@@ -521,21 +673,10 @@ def _overlay_editing() -> ui.Tag:
                 "to the y-axis data-per-pixel magnitude from the current "
                 "calibration (or 0.1 when not calibrated). Shift = 10×.",
             ),
-            ui.TagList(
-                ui.tags.strong("Force symmetry"),
-                " — links the error-bar caps to the center for typed "
-                "edits and arrow-key gang-moves: ",
-                _code("None"), " (each part moves independently), ",
-                _code("Upper"), " (typing/Applying the upper bar derives ",
-                _code("lower = 2y − upper"), "), ", _code("Lower"),
-                " (derives ", _code("upper = 2y − lower"), "), ",
-                _code("Upper & Lower"), " (sets ",
-                _code("y = (upper + lower) / 2"),
-                "). With any non-None mode, arrow keys move point + upper + "
-                "lower together by the same Δy.",
-            ),
+            "Moving a point's center always carries its error bounds "
+            "along, preserving the interval width.",
             "Original values are preserved — every edited row carries "
-            "``*_original`` audit columns alongside the edited values, and "
+            "original_* audit columns alongside the edited values, and "
             "edited points are visually marked on the overlay.",
             ui.TagList(
                 ui.tags.strong("Floating zoom bubble"),
@@ -543,6 +684,36 @@ def _overlay_editing() -> ui.Tag:
                 "is active. Drag the title bar to reposition it. The "
                 "bubble shares the masked composite with the main overlay.",
             ),
+        ),
+    )
+
+
+def _multi_select() -> ui.Tag:
+    return _section(
+        "Selecting multiple points",
+        "multi_select",
+        _p("Several points can be selected and edited together:"),
+        _ul(
+            ui.TagList(ui.tags.strong("Shift-click"),
+                       " a point to add it to (or remove it from) the "
+                       "selection."),
+            ui.TagList(ui.tags.strong("Box Select"),
+                       " — choose the box-select tool from the plot's "
+                       "modebar and drag a rectangle; every point inside "
+                       "replaces the current selection."),
+            ui.TagList(
+                "The last-clicked point is the ",
+                ui.tags.strong("anchor"),
+                " (marked with a larger ring): typed edits and the zoom "
+                "bubble follow the anchor, while arrow keys move the whole "
+                "selection together, preserving each point's interval.",
+            ),
+            ui.TagList(_code("Reset selected (N)"),
+                       " restores every selected point to its original "
+                       "values."),
+            ui.TagList(ui.tags.strong("Esc"),
+                       " (or clicking empty background) clears the "
+                       "selection."),
         ),
     )
 
@@ -732,12 +903,17 @@ def _keyboard_shortcuts() -> ui.Tag:
                        " select a point part (center / upper cap / lower "
                        "cap), then arrow keys move by ",
                        _code("Arrow step"), " data units. ",
-                       _code("Shift + arrow"), " = 10× that step."),
-            ui.TagList(ui.tags.strong("Overlay tab — symmetric nudge:"),
-                       " when ", _code("Force symmetry"),
-                       " is not ", _code("None"),
-                       ", arrow keys move the point and both error-bar "
-                       "caps together by the same Δy."),
+                       _code("Shift + arrow"), " = 10× that step. With "
+                       "several points selected, arrows move all of them "
+                       "together. Held keys are batched client-side, so "
+                       "the motion stays smooth."),
+            ui.TagList(ui.tags.strong("Bound nudge:"),
+                       " with a bound cap selected and ",
+                       _code("Symmetric interval"),
+                       " on, nudging one bound mirrors the other about "
+                       "the center."),
+            ui.TagList(ui.tags.strong("Esc:"),
+                       " clear the overlay selection."),
             "Arrow keys do NOT fire while a form input is focused — click "
             "elsewhere first.",
         ),
@@ -798,32 +974,50 @@ def _troubleshooting() -> ui.Tag:
     )
 
 
-def user_manual_tab() -> ui.Tag:
+def user_manual_tab(ocr: Optional[bool] = None,
+                    json_only: Optional[bool] = None) -> ui.Tag:
     """Build the User Manual nav panel.
 
-    OCR-only sections are appended only when ``axis_pipeline.ocr_available``
-    was importable at module load time. The Calibration points table is also
-    OCR-only because the table shows results from a pipeline run.
+    Two gates shape the section list:
+
+    - ``ocr`` (defaults to module-level ``_OCR_AVAILABLE``): OCR-only
+      sections require a working EasyOCR install.
+    - ``json_only`` (defaults to ``runtime_flags.json_only_mode()``): the
+      JSON-only deployment has no Calibrate tab, so every calibration /
+      plot-type / series-color section is omitted (OCR sections included —
+      they document Calibrate-tab controls).
     """
+    if ocr is None:
+        ocr = _OCR_AVAILABLE
+    if json_only is None:
+        json_only = _JSON_ONLY
+
     panels = [
-        _getting_started(),
-        _calibration_overview(),
-        _manual_calibration(),
-        _manual_values(),
+        _getting_started(json_only=json_only),
+        _agent_json(),
     ]
-    if _OCR_AVAILABLE:
+    if not json_only:
         panels.extend([
-            _auto_calibration(),
-            _detect_frame(),
-            _label_bands(),
-            _calibration_points(),
-            _detection_settings(),
+            _calibration_overview(),
+            _manual_calibration(),
+            _manual_values(),
+        ])
+        if ocr:
+            panels.extend([
+                _auto_calibration(),
+                _detect_frame(),
+                _label_bands(),
+                _calibration_points(),
+                _detection_settings(),
+            ])
+        panels.extend([
+            _plot_type(),
+            _series_colors(),
         ])
     panels.extend([
-        _plot_type(),
-        _series_colors(),
         _mask_preview(),
         _overlay_editing(),
+        _multi_select(),
         _export(),
         _dashboard_scatter(),
         _dashboard_time_series(),

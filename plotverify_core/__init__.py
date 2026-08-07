@@ -31,6 +31,12 @@ from .csv_io import (
     REQUIRED_COLUMNS,
     LoadReport,
     load_csv,
+    validate_and_normalize,
+)
+from .json_io import (
+    JsonLoadResult,
+    export_json,
+    parse_agent_json,
 )
 from .image_io import (
     LARGE_IMAGE_DOWNSCALE_EDGE,
@@ -45,7 +51,7 @@ from .masking import apply_color_mask, delta_e_mask
 from .matching import FileEntry, MatchResult, make_file_entry, match_files
 from .overlay_image import build_masked_overlay_image
 from .overlay_model import EditableOverlay, OverlayPoint
-from .overlay_traces import OverlayTrace, build_overlay_traces
+from .overlay_traces import OverlayTrace, build_overlay_traces, is_horizontal_layout
 from .serialization import SCHEMA_VERSION, load_session, save_session
 from .series_state import SeriesState, init_series_states
 from .session import (
@@ -64,11 +70,13 @@ __all__ = [
     "AppState",
     "EditableOverlay",
     "FileEntry",
+    "JsonLoadResult",
     "ImageLoad",
     "MaskingChoice",
     "MatchResult",
     "OverlayPoint",
     "OverlayTrace",
+    "is_horizontal_layout",
     "PerFileState",
     "PlotVerifyApp",
     "ReviewStatus",
@@ -98,11 +106,14 @@ __all__ = [
     "hex_to_hsv_opencv",
     "init_series_states",
     "is_valid_hex",
+    "export_json",
     "load_csv",
     "load_session",
     "log10_or_none",
     "make_file_entry",
+    "parse_agent_json",
     "match_files",
     "px_to_data",
     "save_session",
+    "validate_and_normalize",
 ]

@@ -269,3 +269,49 @@ def test_user_error_traces_even_without_shiny_session():
         app_mod._trace = orig_trace
     # The error trace fires unconditionally.
     assert any("Test failure.error" == t for t, _ in traces)
+
+
+# ---------------------------------------------------------------------------
+# JSON-only UI gating
+# ---------------------------------------------------------------------------
+
+def test_json_only_ui_has_no_calibrate_surface():
+    from shiny_app import app as app_mod
+
+    html = str(app_mod._make_ui(json_only=True))
+    assert ">Calibrate<" not in html
+    for missing_id in ("image_upload", "csv_upload", "plot_type_select",
+                       "ocr_banner", "reset_anchors"):
+        assert missing_id not in html, missing_id
+    for present_id in ("json_upload", "json_paste", "json_apply",
+                       "session_status"):
+        assert present_id in html, present_id
+
+
+def test_full_ui_keeps_all_tabs_and_uploads():
+    from shiny_app import app as app_mod
+
+    html = str(app_mod._make_ui(json_only=False))
+    assert ">Calibrate<" in html
+    for present_id in ("image_upload", "csv_upload", "json_apply",
+                       "plot_type_select"):
+        assert present_id in html, present_id
+
+
+# ---------------------------------------------------------------------------
+# Edit panel: linked-bounds representation
+# ---------------------------------------------------------------------------
+
+def test_no_force_symmetry_input_remains():
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1] / "shiny_app" / "app.py"
+    assert "force_symmetry" not in src.read_text()
+
+
+def test_overlay_tab_has_conditional_bound_rows():
+    from shiny_app import app as app_mod
+
+    html = str(app_mod._make_ui(json_only=False))
+    # The static edit panel is server-rendered, but the accordion shell and
+    # export controls are in the UI tree; Export starts collapsed.
+    assert "overlay_controls_accordion" in html

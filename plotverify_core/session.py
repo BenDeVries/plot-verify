@@ -85,6 +85,9 @@ class PerFileState:
     background_color_override: str = "#ffffff"
 
     plot_type: str = "time_series"
+    # "vertical" | "horizontal". Only meaningful for bar/box plots; forest is
+    # inherently horizontal regardless of this flag.
+    orientation: str = "vertical"
     csv_error_bar_type: Optional[str] = None
     error_bar_type_override: Optional[str] = None
     error_bar_percent: float = 95.0

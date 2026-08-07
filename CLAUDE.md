@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project does
 
-PlotVerify is a Shiny app for verifying AI-extracted data from scientific plots. It overlays user-supplied data (series, x/y values, error intervals, colors) on the source image and calibrates pixel coordinates to data coordinates using either a multi-phase OCR + geometry pipeline or two manually-placed anchors. The Overlay tab supports per-point editing, ΔE color masking of the source image, and a Dashboard with derived statistics (Pearson r/R² for scatter plots; CSV-half-width → σ conversion for time-series plots).
+PlotVerify is a Shiny app for verifying AI-extracted data from scientific plots. It overlays user-supplied data (series, x/y values, error intervals, colors) on the source image and calibrates pixel coordinates to data coordinates using a multi-phase OCR + geometry pipeline, two manually-placed anchors, or the calibration embedded in an Agent JSON (schema 1.1: image, rows, axes with per-axis log bases, plot type, orientation). The Overlay tab supports per-point and multi-point editing, ΔE color masking of the source image, and a Dashboard with derived statistics (Pearson r/R² for scatter plots; CSV-half-width → σ conversion for time-series plots).
 
 ## Running the app
 
 ```bash
-shiny run app_shiny.py
+shiny run app_shiny.py                        # full app
+PLOTVERIFY_JSON_ONLY=1 shiny run app_shiny.py # JSON-only mode (simulates the shinylive deploy)
 ```
 
 The legacy single-image Streamlit workflow is still available at `app_auto_axis.py` (`streamlit run app_auto_axis.py`), but active development targets the Shiny app.
@@ -21,7 +22,7 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-Current baseline: **198 passed, 1 xfailed** with EasyOCR installed; **~178 passed** without (the 20 real-image regression tests in `tests/test_real_image_regression.py` auto-skip when `easyocr` is missing).
+Current baseline: **349 passed, 1 xfailed** with EasyOCR installed; **~325 passed** without (the real-image regression tests in `tests/test_real_image_regression.py` auto-skip when `easyocr` is missing).
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the full suite on push and pull request against Python 3.10/3.11/3.12. The EasyOCR model is cached at `~/.EasyOCR` across runs.
 
@@ -36,25 +37,33 @@ git config core.hooksPath scripts/git-hooks
 | Branch | Purpose |
 |---|---|
 | `main` | Active development branch |
-| `shiny-manual` | Deployment branch — `main` minus OCR/PyTorch + GitHub Pages deploy infrastructure |
+| `shiny-manual` | Deployment branch — GitHub Pages deploy infrastructure on top of `main` |
 
-The auto-sync workflow (`sync-to-shiny-manual.yml`) was removed. To deploy, manually merge `main` into `shiny-manual` and push:
+### JSON-only mode (runtime flag)
+
+The shinylive deploy is a **JSON-only** surface: no Calibrate tab, no image/CSV uploads — the sidebar accepts only an Agent JSON, which carries the image, data, calibration, plot type and orientation. This is a **runtime flag**, not a branch difference: `shiny_app/runtime_flags.py::json_only_mode()` returns True under Pyodide (`sys.platform == "emscripten"`) and can be forced locally with `PLOTVERIFY_JSON_ONLY=1` (or suppressed with `=0`). `shiny_app/app.py` and `shiny_app/user_manual.py` read it once at import (`_JSON_ONLY`) to shape the UI tree, so the same source files serve both deployments.
+
+Historically `shiny-manual` hard-deleted OCR UI code from `shiny_app/app.py`; with the runtime flag that divergence is obsolete. **At the next `main → shiny-manual` merge**, resolve `shiny_app/` conflicts by taking main wholesale:
 
 ```bash
 git checkout shiny-manual
-git merge main
-git push origin shiny-manual
+git merge main            # conflicts in shiny_app/ expected once
+git checkout main -- shiny_app/app.py shiny_app/user_manual.py
+# ALSO in this same merge commit: add shiny_app/runtime_flags.py and
+# shiny_app/edit_logic.py to the FILES list in scripts/build_shinylive.py
+# (staged flat next to app.py), or the Pages deploy fails at import time.
+git commit && git push origin shiny-manual
 git checkout main
 ```
 
-That merge triggers `.github/workflows/deploy-shinylive.yml` (which lives only on `shiny-manual`), rebuilding and deploying the shinylive bundle to GitHub Pages.
+After that merge, future merges should be conflict-free in `shiny_app/`.
 
-`shiny-manual` carries deployment-only files not present on `main`:
+The push triggers `.github/workflows/deploy-shinylive.yml` (which lives only on `shiny-manual`), rebuilding and deploying the shinylive bundle to GitHub Pages. `shiny-manual` carries deployment-only files not present on `main`:
 - `.github/workflows/deploy-shinylive.yml` — GitHub Pages deploy trigger
 - `shinylive_app/requirements.txt` — Pyodide-compatible deps (no EasyOCR/PyTorch)
-- `scripts/build_shinylive.py` — shinylive bundle builder
+- `scripts/build_shinylive.py` — shinylive bundle builder (stages `shiny_app/*.py` flat at the bundle root plus the `axis_pipeline/` and `plotverify_core/` packages)
 
-`shiny-manual` also removes the OCR-related code from `shiny_app/app.py`: the "Run detection" / "Detect axis frame" buttons, the "X/Y label bands", "Calibration points", "Detection settings", and "Frame-detection warnings" accordion panels, the sidebar OCR banner, and the auto-detect-frame-on-upload logic. The `shiny_app/user_manual.py` module gates its OCR sections via a `try: from axis_pipeline import ocr_available` flag and renders identically on both branches without any branch-specific edits.
+The `shiny_app/user_manual.py` module additionally gates OCR-only sections on `axis_pipeline.ocr_available()` and calibration sections on `json_only_mode()` — see its docstring.
 
 If a new package is added to `requirements.txt` on `main`, manually update `shinylive_app/requirements.txt` on `shiny-manual` if the package is Pyodide-compatible, or omit it if it requires native extensions.
 
@@ -95,13 +104,21 @@ Three layers sit on top of the calibration engine:
 ```
 app_shiny.py                       — entry point: re-exports shiny_app.app:app
     └── shiny_app/app.py           — Shiny UI: page_navbar with three tabs
-        │                            (Calibrate, Overlay, User Manual),
-        │                            reactive layout, all user interaction
+        │                            (Calibrate, Overlay, User Manual; the
+        │                            Calibrate tab and image/CSV uploads are
+        │                            omitted in JSON-only mode), reactive
+        │                            layout, all user interaction
         shiny_app/figures.py       — Plotly figure builders: calibration edit
         │                            widget, data overlay, floating zoom bubble,
         │                            band/anchor/guide shapes
+        shiny_app/edit_logic.py    — Pure nudge/symmetry math (PointVals,
+        │                            apply_nudge, linked_bounds, half_width_of)
+        shiny_app/runtime_flags.py — json_only_mode(): Pyodide detection +
+        │                            PLOTVERIFY_JSON_ONLY env override
         shiny_app/user_manual.py   — User Manual tab content (collapsible
-                                     accordion). OCR sections gate on import.
+                                     accordion). Gates: OCR sections on
+                                     ocr_available(), calibration sections
+                                     on json_only_mode().
 
 plotverify_core/                   — UI-agnostic business logic. No streamlit,
     │                                no shiny imports anywhere in this package.
@@ -118,10 +135,18 @@ plotverify_core/                   — UI-agnostic business logic. No streamlit,
     │                                3000 px when downscale=True
     matching.py                    — match_files(): pair image+CSV by lowercase
     │                                stem; reports duplicates and unmatched
-    overlay_model.py               — EditableOverlay: per-point x/y/err edits,
-    │                                preserves originals, edit_type audit
+    overlay_model.py               — EditableOverlay: per-point x/y/err edits
+    │                                + batch mutators (nudge_points,
+    │                                reset_points), preserves originals,
+    │                                edit_type audit
     overlay_traces.py              — build_overlay_traces(): UI-agnostic trace
-    │                                records with error bars + ribbon coords
+    │                                records with error bars + ribbon coords;
+    │                                is_horizontal_layout(plot_type, orientation)
+    json_io.py                     — Agent JSON schema 1.1 parse/export:
+    │                                embedded image, axes calibration (incl.
+    │                                per-axis log_base), plot_type,
+    │                                orientation, rows; rescale_anchors for
+    │                                downscaled images
     overlay_image.py               — build_masked_overlay_image(): composites
     │                                a source image with one or more series
     │                                ΔE masks painted in the background color
@@ -150,11 +175,24 @@ axis_pipeline/                     — Core calibration engine (see below)
 
 ### Shiny UI surface (`shiny_app/app.py`)
 
-`ui.page_navbar(...)` with three tabs in this order:
+`ui.page_navbar(...)` built by `_make_ui(json_only=None)` / `_make_sidebar(json_only=None)` (the parameter defaults to the module constant `_JSON_ONLY`; tests pass it explicitly).
 
-1. **Calibrate** — calibration image with two draggable anchors (P1 red top-left, P2 green bottom-right; the bottom-left corner is implicit as `(P1.x, P2.y)`); card header buttons: `Run detection`, `Detect axis frame`, `Reset anchors`; right-column accordion: `X/Y label bands`, `Calibration points`, `Manual Values` (pixel inputs + data inputs + log-base checkboxes + `Apply manual calibration` button), `Series colors`, `Plot type` (time_series / scatter); bottom accordion: `Detection settings`, `Frame-detection warnings`.
-2. **Overlay** — calibrated image with extracted data; controls accordion: `Series` (per-series visibility checkbox + mask checkbox + ΔE slider), `Edit a point` (point selector + numeric inputs + Arrow step + Force symmetry select + Apply edit / Reset point), `Export` (filename, audit-columns toggle, download); dashboard panel rendered below; floating draggable zoom-preview bubble keyed to the selected point.
-3. **User Manual** — single-card body with one collapsible accordion of reference sections; all sections start collapsed. OCR-related sections (auto-detection, axis frame, label bands, calibration points table, detection settings) are omitted when EasyOCR is not importable, so the same source file works on `main` and `shiny-manual`.
+**Full mode** — three tabs:
+
+1. **Calibrate** — calibration image with two draggable anchors (P1 red top-left, P2 green bottom-right; the bottom-left corner is implicit as `(P1.x, P2.y)`); card header buttons: `Run detection`, `Detect axis frame`, `Reset anchors`; right-column accordion: `X/Y label bands`, `Calibration points`, `Manual Values` (pixel inputs + data inputs + log-base checkboxes + `Apply manual calibration` button), `Series colors`, `Plot type` (time_series / scatter / forest / bar / box / kaplan_meier); bottom accordion: `Detection settings`, `Frame-detection warnings`.
+2. **Overlay** — calibrated image with extracted data; controls accordion: `Series` (per-series visibility checkbox + mask checkbox + ΔE slider), `Edit a point` (point selector + x/y inputs + either absolute Lower/Upper bound inputs or a `± half-width` input behind the `Symmetric interval` checkbox + Arrow step + Apply edit / Reset point), `Export` (filename, audit-columns toggle, CSV + JSON downloads; starts collapsed); dashboard panel rendered below; floating draggable zoom-preview bubble keyed to the selection anchor.
+3. **User Manual** — single-card body with one collapsible accordion of reference sections; all sections start collapsed, gated per mode (see `user_manual.py` docstring).
+
+**JSON-only mode** (shinylive / `PLOTVERIFY_JSON_ONLY=1`) — the Calibrate tab is omitted (Overlay is first and selected), and the sidebar carries only the Agent JSON block (`json_upload` / `json_paste` / `json_apply`) plus `session_status`. A JSON without an `axes` block is rejected with an error since there is no Calibrate tab to recover with.
+
+The sidebar in full mode carries `image_upload`, `csv_upload`, an OCR-available banner, the Agent JSON block, and the per-file `session_status`. Image upload on `main` auto-runs `detect_axis_frame()` so the anchors seed at the detected rectangle corners.
+
+### Overlay selection & editing model
+
+- Selection state (`selected_overlay_rv`) is `None` or `{"pids": [ordered], "anchor": pid, "part": "center"|"upper"|"lower"}`. Plain click replaces; Shift-click toggles membership; Plotly Box Select replaces with the boxed set; Esc or a background click clears. The pure reducer `_update_selection` and helpers `_sel_pids`/`_sel_anchor`/`_sel_part` live at module level in `app.py` (tested in `tests/test_multi_select_logic.py`).
+- Typed edits and the zoom bubble follow the **anchor** (last-clicked, marked with a large ring when N>1); arrow keys nudge the whole selection; `Reset point` becomes `Reset selected (N)`.
+- Arrow-key nudging is **coalesced client-side**: keydowns accumulate into `{dx, dy}` step counts (Shift ×10 applied at accumulate time) with a leading-edge send plus a 60 ms trailing flush, so held keys cost ≤ ~16 messages/s. The server applies the math via `shiny_app/edit_logic.py::apply_nudge` (center moves always gang-move the bounds; bound moves mirror when `Symmetric interval` is on) and pushes all edited points to the FigureWidget in one `batch_update` (`_push_point_edits_to_widget`) — no figure rebuild.
+- The `Edit a point` panel is static across edits (rebuilds only on file/data changes); values flow via `ui.update_numeric`. The 1e-10 model-comparison guard in `_live_update_point_inputs` distinguishes user edits from programmatic echoes — pushes must use exact model floats.
 
 The sidebar carries `image_upload`, `csv_upload`, an OCR-available banner, and a per-file `session_status` block. Image upload on `main` auto-runs `detect_axis_frame()` so the anchors seed at the detected rectangle corners.
 

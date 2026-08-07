@@ -146,6 +146,8 @@ def _per_file_state_to_dict(fs: PerFileState) -> Dict[str, Any]:
             name: _series_state_to_dict(s) for name, s in fs.series_states.items()
         },
         "series_color_overrides": dict(fs.series_color_overrides),
+        "plot_type": fs.plot_type,
+        "orientation": fs.orientation,
         "masking_choice": fs.masking_choice.value,
         "mask_ready": fs.mask_ready,
         "detection_result": detection_dict,
@@ -201,6 +203,10 @@ def _per_file_state_from_dict(
         for name, s in (d.get("series_states") or {}).items()
     }
     fs.series_color_overrides = dict(d.get("series_color_overrides") or {})
+
+    # Absent in manifests written before schema additions — keep defaults.
+    fs.plot_type = str(d.get("plot_type") or "time_series")
+    fs.orientation = str(d.get("orientation") or "vertical")
 
     masking_value = d.get("masking_choice", MaskingChoice.NO_MASK.value)
     fs.masking_choice = MaskingChoice(masking_value)
