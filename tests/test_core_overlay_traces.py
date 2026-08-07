@@ -105,3 +105,106 @@ def test_overlay_trace_point_ids_default_is_empty_list():
     assert b.point_ids == []
     a.point_ids.append("A#0")
     assert b.point_ids == []  # not shared
+
+
+# ---------------------------------------------------------------------------
+# Bar plot traces
+# ---------------------------------------------------------------------------
+
+def test_bar_traces_no_ribbon():
+    """Bar traces should have empty ribbon arrays (no connecting band)."""
+    [a, _] = build_overlay_traces(_df(), plot_type="bar")
+    assert a.ribbon_x.size == 0
+    assert a.ribbon_y_upper.size == 0
+
+
+def test_bar_traces_have_vertical_error():
+    """Bar traces use standard vertical error offsets (bracket y, not x)."""
+    [a, _] = build_overlay_traces(_df(), plot_type="bar")
+    np.testing.assert_array_equal(a.err_array_plus, [1.0, 1.0, 0.0])
+    np.testing.assert_array_equal(a.err_array_minus, [1.0, 1.0, 0.0])
+
+
+# ---------------------------------------------------------------------------
+# Box plot traces
+# ---------------------------------------------------------------------------
+
+def _box_df():
+    return pd.DataFrame({
+        "series": ["A", "A", "A"],
+        "x": [1.0, 2.0, 3.0],
+        "y": [5.0, 6.0, 10.0],
+        "y_err_lower": [2.0, 3.0, None],
+        "y_err_upper": [8.0, 9.0, None],
+        "box_q1": [3.0, 4.0, None],
+        "box_median": [5.0, 6.0, None],
+        "box_q3": [7.0, 8.0, None],
+        "status": ["", "", "outlier"],
+        "series_color": ["#ff0000"] * 3,
+    })
+
+
+def test_box_traces_carry_quartiles():
+    [t] = build_overlay_traces(_box_df(), plot_type="box")
+    assert t.box_q1 is not None
+    np.testing.assert_array_equal(t.box_q1[:2], [3.0, 4.0])
+    assert t.box_median is not None
+    np.testing.assert_array_equal(t.box_median[:2], [5.0, 6.0])
+    assert t.box_q3 is not None
+    np.testing.assert_array_equal(t.box_q3[:2], [7.0, 8.0])
+
+
+def test_box_traces_carry_status():
+    [t] = build_overlay_traces(_box_df(), plot_type="box")
+    assert t.status == ["", "", "outlier"]
+
+
+def test_box_traces_no_ribbon():
+    [t] = build_overlay_traces(_box_df(), plot_type="box")
+    assert t.ribbon_x.size == 0
+
+
+def test_box_quartiles_none_for_non_box():
+    [t] = build_overlay_traces(_box_df(), plot_type="time_series")
+    assert t.box_q1 is None
+    assert t.box_median is None
+    assert t.box_q3 is None
+
+
+# ---------------------------------------------------------------------------
+# Kaplan-Meier traces
+# ---------------------------------------------------------------------------
+
+def _km_df():
+    return pd.DataFrame({
+        "series": ["Arm A"] * 4,
+        "x": [0.0, 1.0, 2.0, 3.0],
+        "y": [1.0, 0.8, 0.6, 0.6],
+        "y_err_lower": [1.0, 0.7, 0.5, 0.5],
+        "y_err_upper": [1.0, 0.9, 0.7, 0.7],
+        "at_risk": [100, 80, 50, 30],
+        "status": ["", "", "censored", ""],
+        "series_color": ["#0000ff"] * 4,
+    })
+
+
+def test_km_traces_carry_at_risk():
+    [t] = build_overlay_traces(_km_df(), plot_type="kaplan_meier")
+    assert t.at_risk is not None
+    np.testing.assert_array_equal(t.at_risk, [100, 80, 50, 30])
+
+
+def test_km_traces_carry_status():
+    [t] = build_overlay_traces(_km_df(), plot_type="kaplan_meier")
+    assert t.status == ["", "", "censored", ""]
+
+
+def test_km_traces_have_ribbon():
+    [t] = build_overlay_traces(_km_df(), plot_type="kaplan_meier")
+    assert t.ribbon_x.size > 0
+    assert t.ribbon_y_upper.size > 0
+
+
+def test_km_at_risk_none_for_non_km():
+    [t] = build_overlay_traces(_km_df(), plot_type="time_series")
+    assert t.at_risk is None

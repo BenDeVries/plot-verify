@@ -535,10 +535,37 @@ def build_data_overlay_figure(
 
     is_scatter = plot_type == "scatter"
     is_forest = plot_type == "forest"
+    is_bar = plot_type == "bar"
+    is_box = plot_type == "box"
+    is_km = plot_type == "kaplan_meier"
 
     for trace in traces:
         plot_visible = True if trace.visible else "legendonly"
-        if trace.has_err.any() and not is_scatter and not is_forest:
+
+        # --- Ribbon / band fills ---
+        if is_km and trace.has_err.any() and len(trace.ribbon_x):
+            # Step-shaped confidence band for Kaplan-Meier.
+            h_str = trace.color_hex.lstrip("#")
+            fill_rgba = "rgba({},{},{},0.2)".format(
+                int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
+            )
+            fig.add_trace(go.Scatter(
+                x=trace.ribbon_x, y=trace.ribbon_y_upper,
+                mode="lines", line=dict(width=0, shape="hv"),
+                legendgroup=trace.series,
+                name=f"_pv_rib_u_{trace.series}",
+                showlegend=False, visible=plot_visible, hoverinfo="skip",
+            ))
+            fig.add_trace(go.Scatter(
+                x=trace.ribbon_x, y=trace.ribbon_y_lower,
+                mode="lines", line=dict(width=0, shape="hv"),
+                fill="tonexty", fillcolor=fill_rgba,
+                legendgroup=trace.series,
+                name=f"_pv_rib_l_{trace.series}",
+                showlegend=False, visible=plot_visible, hoverinfo="skip",
+            ))
+        elif trace.has_err.any() and not is_scatter and not is_forest and not is_bar and not is_box:
+            # Standard vertical ribbon for time_series / error_bar.
             h_str = trace.color_hex.lstrip("#")
             fill_rgba = "rgba({},{},{},0.2)".format(
                 int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
@@ -558,18 +585,15 @@ def build_data_overlay_figure(
                 name=f"_pv_rib_l_{trace.series}",
                 showlegend=False, visible=plot_visible, hoverinfo="skip",
             ))
+
         if is_forest and trace.has_err.any():
-            # Horizontal ribbon: the interval brackets the value axis, so each
-            # row gets a low-opacity band spanning [lower, upper] in x with a
-            # small vertical thickness centred on its row index. A single trace
-            # with None-separated sub-paths fills every row's band at once.
             h_str = trace.color_hex.lstrip("#")
             fill_rgba = "rgba({},{},{},0.2)".format(
                 int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
             )
             band_x: list = []
             band_y: list = []
-            hh = 0.32  # half-height of the band in row-index units
+            hh = 0.32
             for i in range(len(trace.x)):
                 if not trace.has_err[i]:
                     continue
@@ -586,10 +610,77 @@ def build_data_overlay_figure(
                 name=f"_pv_rib_{trace.series}",
                 showlegend=False, visible=plot_visible, hoverinfo="skip",
             ))
+
+        # --- Box-plot components ---
+        if is_box:
+            h_str = trace.color_hex.lstrip("#")
+            fill_rgba = "rgba({},{},{},0.15)".format(
+                int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16)
+            )
+            _status = trace.status or [""] * len(trace.x)
+            has_q = (trace.box_q1 is not None and trace.box_q3 is not None)
+            if has_q:
+                box_x: list = []
+                box_y: list = []
+                med_x: list = []
+                med_y: list = []
+                whisk_x: list = []
+                whisk_y: list = []
+                bw = 0.3
+                for i in range(len(trace.x)):
+                    if _status[i].lower() == "outlier":
+                        continue
+                    xc = float(trace.x[i])
+                    q1 = float(trace.box_q1[i])
+                    q3 = float(trace.box_q3[i])
+                    if not (np.isfinite(q1) and np.isfinite(q3)):
+                        continue
+                    box_x += [xc - bw, xc + bw, xc + bw, xc - bw, xc - bw, None]
+                    box_y += [q1, q1, q3, q3, q1, None]
+                    if trace.box_median is not None and np.isfinite(trace.box_median[i]):
+                        med = float(trace.box_median[i])
+                        med_x += [xc - bw, xc + bw, None]
+                        med_y += [med, med, None]
+                    if trace.has_err[i]:
+                        lo = float(trace.y[i] - trace.err_array_minus[i])
+                        hi = float(trace.y[i] + trace.err_array_plus[i])
+                        whisk_x += [xc, xc, None, xc, xc, None]
+                        whisk_y += [lo, q1, None, q3, hi, None]
+                        whisk_x += [xc - bw * 0.5, xc + bw * 0.5, None]
+                        whisk_y += [lo, lo, None]
+                        whisk_x += [xc - bw * 0.5, xc + bw * 0.5, None]
+                        whisk_y += [hi, hi, None]
+                if box_x:
+                    fig.add_trace(go.Scatter(
+                        x=box_x, y=box_y,
+                        mode="lines", line=dict(width=1, color=trace.color_hex),
+                        fill="toself", fillcolor=fill_rgba,
+                        legendgroup=trace.series,
+                        name=f"_pv_box_{trace.series}",
+                        showlegend=False, visible=plot_visible, hoverinfo="skip",
+                    ))
+                if med_x:
+                    fig.add_trace(go.Scatter(
+                        x=med_x, y=med_y,
+                        mode="lines", line=dict(width=2, color=trace.color_hex),
+                        legendgroup=trace.series,
+                        name=f"_pv_med_{trace.series}",
+                        showlegend=False, visible=plot_visible, hoverinfo="skip",
+                    ))
+                if whisk_x:
+                    fig.add_trace(go.Scatter(
+                        x=whisk_x, y=whisk_y,
+                        mode="lines", line=dict(width=1, color=trace.color_hex),
+                        legendgroup=trace.series,
+                        name=f"_pv_whisk_{trace.series}",
+                        showlegend=False, visible=plot_visible, hoverinfo="skip",
+                    ))
+
         # error-bar visualisation — horizontal for forest (the interval brackets
-        # the value axis), vertical otherwise.
+        # the value axis), vertical otherwise. Box plots show whiskers via the
+        # dedicated component above, so skip the generic error bars.
         err_bar = None
-        if trace.has_err.any():
+        if trace.has_err.any() and not is_box:
             err_bar = dict(
                 type="data", symmetric=False,
                 array=trace.err_array_plus,
@@ -611,9 +702,7 @@ def build_data_overlay_figure(
                 marker_line_colors.append("rgba(0,0,0,0.5)")
                 marker_line_widths.append(0.5)
 
-        # customdata is [[pid], ...] for main scatter — one element per point so
-        # the click handler can retrieve the exact EditableOverlay point_id.
-        # Forest carries [[pid, status], ...] so the status note reaches the hover.
+        # customdata and display mode depend on plot type.
         if is_forest:
             scatter_mode = "markers"
             line_width = 0
@@ -626,6 +715,42 @@ def build_data_overlay_figure(
             hovertemplate = ("%{fullData.name}: %{x:.4g}"
                              "<br>%{customdata[1]}"
                              "<extra>%{customdata[0]}</extra>")
+        elif is_bar:
+            scatter_mode = "markers"
+            line_width = 0
+            marker_fill = trace.marker_color_hex
+            marker_symbol = "circle"
+            customdata = [[pid] for pid in point_ids]
+            hovertemplate = ("%{fullData.name}: (%{x:.4g}, %{y:.4g})"
+                             "<extra>%{customdata[0]}</extra>")
+        elif is_box:
+            scatter_mode = "markers"
+            line_width = 0
+            marker_fill = trace.marker_color_hex
+            _status = trace.status or [""] * len(trace.x)
+            marker_symbol = ["diamond-open" if s.lower() == "outlier" else "circle"
+                             for s in _status]
+            customdata = [[pid, st] for pid, st in zip(point_ids, _status)]
+            hovertemplate = ("%{fullData.name}: (%{x:.4g}, %{y:.4g})"
+                             "<br>%{customdata[1]}"
+                             "<extra>%{customdata[0]}</extra>")
+        elif is_km:
+            scatter_mode = "lines+markers"
+            line_width = 2
+            marker_fill = trace.marker_color_hex
+            marker_symbol = "circle"
+            _status = trace.status or [""] * len(trace.x)
+            _at_risk = trace.at_risk
+            if _at_risk is not None:
+                customdata = [[pid, st, f"{ar:.0f}" if np.isfinite(ar) else ""]
+                              for pid, st, ar in zip(point_ids, _status, _at_risk)]
+                hovertemplate = ("%{fullData.name}: (%{x:.4g}, %{y:.4g})"
+                                 "<br>At risk: %{customdata[2]}"
+                                 "<extra>%{customdata[0]}</extra>")
+            else:
+                customdata = [[pid, st] for pid, st in zip(point_ids, _status)]
+                hovertemplate = ("%{fullData.name}: (%{x:.4g}, %{y:.4g})"
+                                 "<extra>%{customdata[0]}</extra>")
         else:
             scatter_mode = "markers" if is_scatter else "lines+markers"
             line_width = 0 if is_scatter else 2
@@ -636,10 +761,12 @@ def build_data_overlay_figure(
             hovertemplate = ("%{fullData.name}: (%{x:.4g}, %{y:.4g})"
                              "<extra>%{customdata[0]}</extra>")
 
+        line_shape = "hv" if is_km else None
         fig.add_trace(go.Scatter(
             x=trace.x, y=trace.y,
             mode=scatter_mode,
-            line=dict(color=trace.color_hex, width=line_width),
+            line=dict(color=trace.color_hex, width=line_width,
+                      **({"shape": line_shape} if line_shape else {})),
             marker=dict(
                 symbol=marker_symbol,
                 color=marker_fill,
@@ -654,11 +781,28 @@ def build_data_overlay_figure(
             customdata=customdata,
             hovertemplate=hovertemplate,
         ))
-        # Clickable caps at error-bar endpoints. Customdata has 2 elements
-        # [pid, "upper"/"lower"] so the click handler distinguishes them from
-        # main-point clicks (1 element). Forest intervals run horizontally, so
-        # the caps sit at the left/right ends of the row rather than above/below.
-        if trace.has_err.any():
+
+        # KM censored markers — small vertical tick marks on the step curve.
+        if is_km:
+            _status = trace.status or [""] * len(trace.x)
+            _cens_idx = [i for i, s in enumerate(_status) if s.lower() == "censored"]
+            if _cens_idx:
+                fig.add_trace(go.Scatter(
+                    x=[float(trace.x[i]) for i in _cens_idx],
+                    y=[float(trace.y[i]) for i in _cens_idx],
+                    mode="markers",
+                    marker=dict(symbol="line-ns", size=10,
+                                color=trace.color_hex, opacity=0.7,
+                                line=dict(width=2, color=trace.color_hex)),
+                    customdata=[[point_ids[i], "censored"] for i in _cens_idx],
+                    name=f"_pv_cens_{trace.series}", showlegend=False,
+                    hovertemplate=("%{fullData.legendgroup} (censored)"
+                                   "<extra>%{customdata[0]}</extra>"),
+                    legendgroup=trace.series, visible=plot_visible,
+                ))
+
+        # Clickable caps at error-bar endpoints (skip for box — whiskers drawn above).
+        if trace.has_err.any() and not is_box:
             _cap_idx = [int(i) for i in range(len(trace.x)) if trace.has_err[i]]
             if is_forest:
                 _upper_x = [float(trace.x[i] + trace.err_array_plus[i]) for i in _cap_idx]

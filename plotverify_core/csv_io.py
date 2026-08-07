@@ -57,33 +57,17 @@ def _coerce_bool(series: pd.Series) -> pd.Series:
     )
 
 
-def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
-    """Parse and validate CSV text.
+def validate_and_normalize(
+    df: pd.DataFrame, *, is_forest: bool = False,
+) -> Tuple[Optional[pd.DataFrame], LoadReport]:
+    """Validate and normalize a DataFrame with series/x/y/err columns.
 
-    Returns (df, report). When ``df is None``, ``report.error`` describes why.
-
-    Behaviour matches the legacy `_load_csv` in `app_auto_axis.py`:
-    - Required columns: series, x, y
-    - Optional error-bar columns: y_err_lower, y_err_upper (filled with NaN
-      when absent so downstream `np.isfinite` checks just work).
-    - Reversed error bars (lower > y or upper < y) are auto-swapped and
-      counted.
-    - Invalid series_color hex values are replaced with the fallback grey.
+    Shared by ``load_csv`` (from CSV text) and ``json_io`` (from JSON rows).
+    Returns ``(df, report)``; when ``df is None``, ``report.error`` explains why.
     """
     report = LoadReport()
-    try:
-        df = pd.read_csv(io.StringIO(csv_source))
-    except Exception as e:
-        report.error = f"Failed to parse CSV: {e}"
-        return None, report
-
-    is_forest = _looks_like_forest(df)
     report.is_forest = is_forest
-    if is_forest:
-        df = df.rename(columns=FOREST_COLUMN_MAP)
 
-    # Forest CSVs have no `y` column — the vertical axis is a categorical row
-    # index synthesised below, so only `x` (the value) is required from disk.
     required = ["x"] if is_forest else REQUIRED_COLUMNS
     missing = [c for c in required if c not in df.columns]
     if missing:
@@ -96,9 +80,6 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
     has_series_color = "series_color" in df.columns
     report.has_series_color_column = has_series_color
     if not has_series_color:
-        # Assign cycling palette colors per unique series so downstream renderers
-        # never see pd.NA. `has_series_color_column` stays False so the UI knows
-        # the user did not pick these — masking gates on intentional colors only.
         palette = dict(assign_palette_colors(df["series"].astype(str).tolist()))
         df["series_color"] = df["series"].astype(str).map(palette)
 
@@ -109,30 +90,30 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
     df["x"] = pd.to_numeric(df["x"], errors="coerce")
     df["y_err_lower"] = pd.to_numeric(df["y_err_lower"], errors="coerce")
     df["y_err_upper"] = pd.to_numeric(df["y_err_upper"], errors="coerce")
+    for extra_col in ("box_q1", "box_median", "box_q3", "at_risk"):
+        if extra_col in df.columns:
+            df[extra_col] = pd.to_numeric(df[extra_col], errors="coerce")
 
     if is_forest:
-        # Drop rows with no value, then place each remaining row on the
-        # categorical vertical axis: `y` is a row index assigned top→bottom in
-        # CSV order (first CSV row sits at the top with the largest index). The
-        # even spacing is realised later by the linear y-calibration.
         n_before = len(df)
         df = df.dropna(subset=["x"]).reset_index(drop=True)
         report.n_rows_dropped_missing_xy = n_before - len(df)
         n = len(df)
         df["y"] = [float(n - 1 - i) for i in range(n)]
-        if "is_summary" in df.columns:
-            df["is_summary"] = _coerce_bool(df["is_summary"])
-        else:
-            df["is_summary"] = False
-        if "status" in df.columns:
-            df["status"] = df["status"].fillna("").astype(str)
-        else:
-            df["status"] = ""
     else:
         df["y"] = pd.to_numeric(df["y"], errors="coerce")
         n_before = len(df)
         df = df.dropna(subset=["x", "y"]).reset_index(drop=True)
         report.n_rows_dropped_missing_xy = n_before - len(df)
+
+    if "is_summary" in df.columns:
+        df["is_summary"] = _coerce_bool(df["is_summary"])
+    else:
+        df["is_summary"] = False
+    if "status" in df.columns:
+        df["status"] = df["status"].fillna("").astype(str)
+    else:
+        df["status"] = ""
 
     if report.n_rows_dropped_missing_xy > 0:
         report.warnings.append(
@@ -143,8 +124,6 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
     df["series"] = df["series"].astype(str)
 
     if has_series_color:
-        # Force object dtype: an all-NaN column read from a re-saved CSV comes
-        # back as float64, which then rejects the string fallback below.
         df["series_color"] = df["series_color"].astype(object)
         invalid = ~df["series_color"].apply(is_valid_hex)
         report.n_invalid_series_colors = int(invalid.sum())
@@ -161,8 +140,6 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
             raw = str(non_null.iloc[0]).strip()
             report.error_bar_type = raw.title() if raw else None
 
-    # Reversed error bars: the interval must bracket the point estimate. For a
-    # forest plot the estimate is `x` (the value); otherwise it is `y`.
     eu = df["y_err_upper"]
     el = df["y_err_lower"]
     point = df["x"] if is_forest else df["y"]
@@ -183,3 +160,22 @@ def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
         df.loc[reversed_mask, "y_err_upper"] = lower_orig
 
     return df, report
+
+
+def load_csv(csv_source: str) -> Tuple[Optional[pd.DataFrame], LoadReport]:
+    """Parse and validate CSV text.
+
+    Returns (df, report). When ``df is None``, ``report.error`` describes why.
+    """
+    try:
+        df = pd.read_csv(io.StringIO(csv_source))
+    except Exception as e:
+        report = LoadReport()
+        report.error = f"Failed to parse CSV: {e}"
+        return None, report
+
+    is_forest = _looks_like_forest(df)
+    if is_forest:
+        df = df.rename(columns=FOREST_COLUMN_MAP)
+
+    return validate_and_normalize(df, is_forest=is_forest)

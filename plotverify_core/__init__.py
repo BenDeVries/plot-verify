@@ -31,6 +31,12 @@ from .csv_io import (
     REQUIRED_COLUMNS,
     LoadReport,
     load_csv,
+    validate_and_normalize,
+)
+from .json_io import (
+    JsonLoadResult,
+    export_json,
+    parse_agent_json,
 )
 from .image_io import (
     LARGE_IMAGE_DOWNSCALE_EDGE,
@@ -64,6 +70,7 @@ __all__ = [
     "AppState",
     "EditableOverlay",
     "FileEntry",
+    "JsonLoadResult",
     "ImageLoad",
     "MaskingChoice",
     "MatchResult",
@@ -98,11 +105,14 @@ __all__ = [
     "hex_to_hsv_opencv",
     "init_series_states",
     "is_valid_hex",
+    "export_json",
     "load_csv",
     "load_session",
     "log10_or_none",
     "make_file_entry",
+    "parse_agent_json",
     "match_files",
     "px_to_data",
     "save_session",
+    "validate_and_normalize",
 ]

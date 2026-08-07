@@ -260,6 +260,9 @@ def _calibration_tab() -> ui.Tag:
                                 "time_series": "Time series w/ intervals",
                                 "scatter": "Scatter plots",
                                 "forest": "Forest plot",
+                                "bar": "Bar chart",
+                                "box": "Box plot",
+                                "kaplan_meier": "Kaplan-Meier",
                             },
                         ),
                         value="plot_type",
@@ -322,6 +325,7 @@ def _overlay_tab() -> ui.Tag:
                             ui.input_checkbox("include_audit_cols",
                                                "Include audit columns", value=False),
                             ui.download_button("export_csv", "Export updated CSV"),
+                            ui.download_button("export_json", "Export as JSON"),
                             value="export",
                         ),
                         id="overlay_controls_accordion",
@@ -684,6 +688,14 @@ def _make_ui() -> ui.Tag:
                             accept=[".csv"], multiple=False),
             ui.output_ui("ocr_banner"),
             ui.hr(),
+            ui.h5("Agent JSON"),
+            ui.input_file("json_upload", "JSON file",
+                            accept=[".json"], multiple=False),
+            ui.input_text_area("json_paste", "or paste JSON", rows=3,
+                                placeholder='{"schema_version": "1.0", ...}'),
+            ui.input_action_button("json_apply", "Import JSON",
+                                    class_="btn-outline-primary btn-sm"),
+            ui.hr(),
             ui.output_ui("session_status"),
             width=320,
         ),
@@ -915,6 +927,82 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             _cur_csv = csv_revision()
         csv_revision.set(_cur_csv + 1)
         _bump_overlay()
+
+    # ------------------------------------------------------------------
+    # JSON import
+    # ------------------------------------------------------------------
+
+    @reactive.effect
+    @reactive.event(input.json_apply)
+    def _on_json_import():
+        json_text = None
+        files = input.json_upload()
+        if files:
+            try:
+                json_text = Path(files[0]["datapath"]).read_text(encoding="utf-8")
+            except Exception as e:
+                ui.notification_show(f"JSON file read failed: {e}", type="error")
+                return
+        if json_text is None:
+            json_text = (input.json_paste() or "").strip()
+        if not json_text:
+            ui.notification_show(
+                "No JSON provided (upload a file or paste text).", type="warning",
+            )
+            return
+
+        try:
+            fid, result = pv.add_json(json_text)
+        except Exception as e:
+            ui.notification_show(f"JSON import failed: {e}", type="error")
+            return
+
+        for w in result.warnings:
+            ui.notification_show(w, type="warning", duration=6)
+
+        file_id_rv.set(fid)
+        fs = pv.active
+        if fs is not None:
+            _get_image_uri(fid)
+            if result.anchors is not None:
+                syncing["shapes_to_inputs"] = True
+                try:
+                    anchors_rv.set(result.anchors)
+                finally:
+                    syncing["shapes_to_inputs"] = False
+            if fs.plot_type:
+                ui.update_select("plot_type_select", selected=fs.plot_type)
+
+        selected_anchor.set(None)
+        selected_overlay_rv.set(None)
+        _bump_cal()
+        _bump_overlay()
+
+        with reactive.isolate():
+            _cur_csv = csv_revision()
+        csv_revision.set(_cur_csv + 1)
+
+        has_cal = (
+            fs is not None
+            and fs.detection_result is not None
+            and fs.detection_result.success
+        )
+        has_data = fs is not None and fs.csv_df is not None
+        if has_cal and has_data:
+            ui.update_navs("main_nav", selected="Overlay")
+            ui.notification_show(
+                "JSON imported — calibration and data loaded.", type="message",
+            )
+        elif has_cal:
+            ui.notification_show(
+                "JSON imported — calibration loaded (no data rows).", type="message",
+            )
+        elif has_data:
+            ui.notification_show(
+                "JSON imported — data loaded (no calibration).", type="message",
+            )
+        else:
+            ui.notification_show("JSON imported — image only.", type="message")
 
     # ------------------------------------------------------------------
     # Plot type
@@ -2196,14 +2284,17 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         is_forest = fs.plot_type == "forest"
         visibility: dict[str, bool] = {}
         mask_active: dict[str, bool] = {}
+        # Re-attach metadata columns that EditableOverlay.to_dataframe() drops.
+        if fs.csv_df is not None and len(df) == len(fs.csv_df):
+            _reattach = {
+                "forest": ("is_summary", "status"),
+                "box": ("box_q1", "box_median", "box_q3", "status", "is_summary"),
+                "kaplan_meier": ("at_risk", "status"),
+            }
+            for col in _reattach.get(fs.plot_type, ()):
+                if col in fs.csv_df.columns:
+                    df[col] = fs.csv_df[col].to_numpy()
         if is_forest:
-            # EditableOverlay.to_dataframe() drops the static forest metadata;
-            # re-attach it positionally (row order is preserved 1:1 with csv_df).
-            if fs.csv_df is not None and len(df) == len(fs.csv_df):
-                if "is_summary" in fs.csv_df.columns:
-                    df["is_summary"] = fs.csv_df["is_summary"].to_numpy()
-                if "status" in fs.csv_df.columns:
-                    df["status"] = fs.csv_df["status"].to_numpy()
             # A single compact control drives every row.
             vis_all = _safe_bool(lambda: input.forest_vis(), True)
             mask_all = _safe_bool(lambda: input.forest_mask(), False)
@@ -2494,7 +2585,72 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 style="margin-top:12px;overflow:visible;",
             )
 
-        # ---- Time series dashboard ----
+        if fs.plot_type == "box":
+            series_names = list(dict.fromkeys(df["series"].astype(str).tolist()))
+            rows = []
+            for sname in series_names:
+                sdf = df[df["series"] == sname]
+                n = len(sdf)
+                non_outlier = sdf[sdf.get("status", pd.Series(dtype=str)).str.lower() != "outlier"] if "status" in sdf.columns else sdf
+                n_outlier = n - len(non_outlier)
+                q1_str = f"{non_outlier['box_q1'].median():.4g}" if "box_q1" in sdf.columns and len(non_outlier) else "—"
+                med_str = f"{non_outlier['box_median'].median():.4g}" if "box_median" in sdf.columns and len(non_outlier) else "—"
+                q3_str = f"{non_outlier['box_q3'].median():.4g}" if "box_q3" in sdf.columns and len(non_outlier) else "—"
+                rows.append(ui.tags.tr(
+                    ui.tags.td(sname),
+                    ui.tags.td(str(n)),
+                    ui.tags.td(q1_str),
+                    ui.tags.td(med_str),
+                    ui.tags.td(q3_str),
+                    ui.tags.td(str(n_outlier)),
+                ))
+            return ui.card(
+                ui.card_header("Box plot summary"),
+                ui.tags.table(
+                    ui.tags.thead(ui.tags.tr(
+                        ui.tags.th("Series"),
+                        ui.tags.th("n"),
+                        ui.tags.th("Q1"),
+                        ui.tags.th("Median"),
+                        ui.tags.th("Q3"),
+                        ui.tags.th("Outliers"),
+                    )),
+                    ui.tags.tbody(*rows),
+                    class_="table table-sm table-striped",
+                ),
+                style="margin-top:12px;",
+            )
+
+        if fs.plot_type == "kaplan_meier":
+            series_names = list(dict.fromkeys(df["series"].astype(str).tolist()))
+            rows = []
+            for sname in series_names:
+                sdf = df[df["series"] == sname]
+                n = len(sdf)
+                n_censored = int((sdf["status"].str.lower() == "censored").sum()) if "status" in sdf.columns else 0
+                n_events = n - n_censored
+                rows.append(ui.tags.tr(
+                    ui.tags.td(sname),
+                    ui.tags.td(str(n)),
+                    ui.tags.td(str(n_events)),
+                    ui.tags.td(str(n_censored)),
+                ))
+            return ui.card(
+                ui.card_header("Kaplan-Meier summary"),
+                ui.tags.table(
+                    ui.tags.thead(ui.tags.tr(
+                        ui.tags.th("Arm"),
+                        ui.tags.th("n"),
+                        ui.tags.th("Events"),
+                        ui.tags.th("Censored"),
+                    )),
+                    ui.tags.tbody(*rows),
+                    class_="table table-sm table-striped",
+                ),
+                style="margin-top:12px;",
+            )
+
+        # ---- Time series dashboard (also used for bar) ----
         default_eb = fs.effective_error_bar_type or "SD"
         try:
             eb_type = input.eb_type_input() or default_eb
@@ -3063,6 +3219,20 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             yield b"# No CSV loaded.\n"
             return
         data = pv.export_csv(fid, include_audit_cols=bool(input.include_audit_cols()))
+        yield data
+
+    @render.download(
+        filename=lambda: (input.export_filename() or "corrected").rsplit(".", 1)[0] + ".json",
+    )
+    def export_json():
+        fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if fs is None or fs.overlay is None:
+            yield b'{"error": "No data loaded."}\n'
+            return
+        data = pv.export_json(
+            fid, include_audit_cols=bool(input.include_audit_cols()),
+        )
         yield data
 
 

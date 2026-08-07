@@ -254,6 +254,70 @@ class PlotVerifyApp:
         df = fs.overlay.to_dataframe(include_audit_cols=include_audit_cols)
         return df.to_csv(index=False).encode("utf-8")
 
+    def export_json(self, file_id: str, *,
+                     include_audit_cols: bool = False,
+                     include_image: bool = False) -> bytes:
+        """Return the current state as agent-schema JSON (UTF-8 bytes)."""
+        from .json_io import export_json as _export
+        fs = self._require(file_id)
+        return _export(
+            fs, include_audit_cols=include_audit_cols,
+            include_image=include_image,
+        ).encode("utf-8")
+
+    # ------------------------------------------------------------------
+    # JSON ingest
+    # ------------------------------------------------------------------
+
+    def add_json(self, json_text: str) -> "tuple[str, JsonLoadResult]":
+        """Ingest an agent JSON: decode image, set calibration, load data.
+
+        Returns ``(file_id, result)``.  If ``result.error`` is set the
+        import failed entirely; otherwise partial imports are allowed
+        (e.g. image + calibration but no rows).
+        """
+        from .json_io import JsonLoadResult, parse_agent_json
+
+        result = parse_agent_json(json_text)
+        if result.error:
+            raise ValueError(result.error)
+
+        if result.image_bytes is None:
+            raise ValueError(
+                "JSON does not contain an image (no data_uri). "
+                "Upload the image separately first, then import the JSON."
+            )
+
+        file_id = self.add_image(
+            result.image_filename or "imported.png",
+            result.image_bytes,
+            downscale=True,
+        )
+
+        if result.anchors is not None:
+            self.apply_manual_calibration(file_id, result.anchors)
+
+        fs = self.state.files[file_id]
+
+        if result.csv_df is not None:
+            report = result.csv_report
+            fs.csv_filename = (result.image_filename or "data").rsplit(".", 1)[0] + ".csv"
+            fs.csv_df = result.csv_df
+            fs.csv_has_series_color = (
+                report.has_series_color_column if report else False
+            )
+            fs.csv_error_bar_type = report.error_bar_type if report else None
+            if result.plot_type:
+                fs.plot_type = result.plot_type
+            fs.overlay = EditableOverlay(result.csv_df)
+            fs.series_states = init_series_states(result.csv_df)
+
+        if result.series_colors:
+            fs.series_color_overrides = result.series_colors
+
+        self.select(file_id)
+        return file_id, result
+
     # ------------------------------------------------------------------
     # Persistence (.pvsession zip)
     # ------------------------------------------------------------------
