@@ -647,13 +647,16 @@ def build_data_overlay_figure(
                         med = float(trace.box_median[i])
                         med_cat += [cat - bw, cat + bw, None]
                         med_val += [med, med, None]
-                    if trace.has_err[i]:
+                    if trace.has_lower[i]:
                         lo = val_pt - float(trace.err_array_minus[i])
-                        hi = val_pt + float(trace.err_array_plus[i])
-                        whisk_cat += [cat, cat, None, cat, cat, None]
-                        whisk_val += [lo, q1, None, q3, hi, None]
+                        whisk_cat += [cat, cat, None]
+                        whisk_val += [lo, q1, None]
                         whisk_cat += [cat - bw * 0.5, cat + bw * 0.5, None]
                         whisk_val += [lo, lo, None]
+                    if trace.has_upper[i]:
+                        hi = val_pt + float(trace.err_array_plus[i])
+                        whisk_cat += [cat, cat, None]
+                        whisk_val += [q3, hi, None]
                         whisk_cat += [cat - bw * 0.5, cat + bw * 0.5, None]
                         whisk_val += [hi, hi, None]
                 if is_horiz:
@@ -818,26 +821,26 @@ def build_data_overlay_figure(
 
         # Clickable caps at error-bar endpoints (skip for box — whiskers drawn above).
         if trace.has_err.any() and not is_box:
-            _cap_idx = [int(i) for i in range(len(trace.x)) if trace.has_err[i]]
+            _u_idx = [int(i) for i in range(len(trace.x)) if trace.has_upper[i]]
+            _l_idx = [int(i) for i in range(len(trace.x)) if trace.has_lower[i]]
             if is_horiz:
-                _upper_x = [float(trace.x[i] + trace.err_array_plus[i]) for i in _cap_idx]
-                _lower_x = [float(trace.x[i] - trace.err_array_minus[i]) for i in _cap_idx]
-                _cap_y = [float(trace.y[i]) for i in _cap_idx]
-                _u_x, _u_y, _u_sym = _upper_x, _cap_y, "triangle-right"
-                _l_x, _l_y, _l_sym = _lower_x, _cap_y, "triangle-left"
+                _u_x = [float(trace.x[i] + trace.err_array_plus[i]) for i in _u_idx]
+                _u_y = [float(trace.y[i]) for i in _u_idx]
+                _l_x = [float(trace.x[i] - trace.err_array_minus[i]) for i in _l_idx]
+                _l_y = [float(trace.y[i]) for i in _l_idx]
+                _u_sym, _l_sym = "triangle-right", "triangle-left"
             else:
-                _cap_x = [float(trace.x[i]) for i in _cap_idx]
-                _u_x = _cap_x
-                _u_y = [float(trace.y[i] + trace.err_array_plus[i]) for i in _cap_idx]
-                _l_x = _cap_x
-                _l_y = [float(trace.y[i] - trace.err_array_minus[i]) for i in _cap_idx]
+                _u_x = [float(trace.x[i]) for i in _u_idx]
+                _u_y = [float(trace.y[i] + trace.err_array_plus[i]) for i in _u_idx]
+                _l_x = [float(trace.x[i]) for i in _l_idx]
+                _l_y = [float(trace.y[i] - trace.err_array_minus[i]) for i in _l_idx]
                 _u_sym, _l_sym = "triangle-up", "triangle-down"
             fig.add_trace(go.Scatter(
                 x=_u_x, y=_u_y, mode="markers",
                 marker=dict(symbol=_u_sym, size=7,
                             color=trace.color_hex, opacity=0.4,
                             line=dict(width=0)),
-                customdata=[[point_ids[i], "upper"] for i in _cap_idx],
+                customdata=[[point_ids[i], "upper"] for i in _u_idx],
                 name=f"_pv_cap_u_{trace.series}", showlegend=False,
                 hovertemplate=("%{fullData.legendgroup} upper"
                                "<extra>%{customdata[0]}</extra>"),
@@ -848,7 +851,7 @@ def build_data_overlay_figure(
                 marker=dict(symbol=_l_sym, size=7,
                             color=trace.color_hex, opacity=0.4,
                             line=dict(width=0)),
-                customdata=[[point_ids[i], "lower"] for i in _cap_idx],
+                customdata=[[point_ids[i], "lower"] for i in _l_idx],
                 name=f"_pv_cap_l_{trace.series}", showlegend=False,
                 hovertemplate=("%{fullData.legendgroup} lower"
                                "<extra>%{customdata[0]}</extra>"),
@@ -949,6 +952,13 @@ def build_zoom_bubble_figure(
     _raw_color = getattr(pt, "color_hex", FALLBACK_HEX)
     color = _raw_color if is_valid_hex(_raw_color) else FALLBACK_HEX
 
+    # A one-sided interval collapses its missing bound onto the point estimate
+    # so the error bar and band still render, spanning point → bound.
+    has_iv = upper is not None or lower is not None
+    v_c = x_c if is_horiz else y_c
+    eff_upper = upper if upper is not None else v_c
+    eff_lower = lower if lower is not None else v_c
+
     if is_horiz:
         # Interval endpoints are x-values on a fixed row.
         if part == "upper" and upper is not None:
@@ -972,12 +982,12 @@ def build_zoom_bubble_figure(
     focus_yp = _plot(focus_y, y_log)
 
     # In horizontal layouts the interval brackets the value axis (x); otherwise y.
-    if upper is not None and lower is not None:
+    if has_iv:
         if is_horiz:
-            err_w_plot = abs(_plot(upper, x_log) - _plot(lower, x_log))
+            err_w_plot = abs(_plot(eff_upper, x_log) - _plot(eff_lower, x_log))
             err_h_plot = None
         else:
-            err_h_plot = abs(_plot(upper, y_log) - _plot(lower, y_log))
+            err_h_plot = abs(_plot(eff_upper, y_log) - _plot(eff_lower, y_log))
             err_w_plot = None
     else:
         err_h_plot = None
@@ -1040,11 +1050,11 @@ def build_zoom_bubble_figure(
     # vertical otherwise (interval on y).
     err_x_dict = None
     err_y_dict = None
-    if upper is not None and lower is not None:
+    if has_iv:
         _bar = dict(
             type="data", symmetric=False,
-            array=[max(0.0, upper - (x_c if is_horiz else y_c))],
-            arrayminus=[max(0.0, (x_c if is_horiz else y_c) - lower)],
+            array=[max(0.0, eff_upper - v_c)],
+            arrayminus=[max(0.0, v_c - eff_lower)],
             color=color, thickness=2, width=8,
         )
         if is_horiz:
@@ -1090,18 +1100,18 @@ def build_zoom_bubble_figure(
     # Filled ribbon band showing the confidence interval at the selected point.
     # Horizontal: band spanning [lower, upper] in x, thin in y (rows).
     # Otherwise: vertical band spanning [lower, upper] in y, thin in x.
-    if upper is not None and lower is not None:
+    if has_iv:
         h_str = color.lstrip("#")
         fill_rgba = "rgba({},{},{},0.25)".format(
             int(h_str[0:2], 16), int(h_str[2:4], 16), int(h_str[4:6], 16))
         if is_horiz:
             bh = y_zoom_r * 0.12
-            rib_x = [lower,    upper,    upper,    lower,    lower]
-            rib_y = [y_c - bh, y_c - bh, y_c + bh, y_c + bh, y_c - bh]
+            rib_x = [eff_lower, eff_upper, eff_upper, eff_lower, eff_lower]
+            rib_y = [y_c - bh,  y_c - bh,  y_c + bh,  y_c + bh,  y_c - bh]
         else:
             bw = x_zoom_r * 0.12
-            rib_x = [x_c - bw, x_c - bw, x_c + bw, x_c + bw, x_c - bw]
-            rib_y = [lower,    upper,    upper,    lower,    lower]
+            rib_x = [x_c - bw,  x_c - bw,  x_c + bw,  x_c + bw,  x_c - bw]
+            rib_y = [eff_lower, eff_upper, eff_upper, eff_lower, eff_lower]
         fig.add_trace(go.Scatter(
             x=rib_x, y=rib_y,
             mode="lines", fill="toself", fillcolor=fill_rgba,

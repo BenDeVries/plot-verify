@@ -308,6 +308,30 @@ def test_no_force_symmetry_input_remains():
     assert "force_symmetry" not in src.read_text()
 
 
+def test_coerce_delta_e_clamps_and_rejects_blanks():
+    from shiny_app import app as app_mod
+
+    assert app_mod._coerce_delta_e(12) == 12
+    assert app_mod._coerce_delta_e("12") == 12
+    assert app_mod._coerce_delta_e(12.6) == 13
+    assert app_mod._coerce_delta_e(0) == app_mod.DELTA_E_MIN
+    assert app_mod._coerce_delta_e(9999) == app_mod.DELTA_E_MAX
+    # A blank field mid-edit must leave the stored threshold untouched.
+    assert app_mod._coerce_delta_e(None) is None
+    assert app_mod._coerce_delta_e("") is None
+
+
+def test_legend_clicks_are_bridged_to_visibility_checkboxes():
+    import pathlib
+    from shiny_app import app as app_mod
+
+    assert "plotly_legendclick" in app_mod._ANCHOR_KEY_SCRIPT
+    assert "overlay_legend_toggle" in app_mod._ANCHOR_KEY_SCRIPT
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "shiny_app" / "app.py").read_text()
+    assert "def _on_overlay_legend_toggle" in src
+
+
 def test_overlay_tab_has_conditional_bound_rows():
     from shiny_app import app as app_mod
 

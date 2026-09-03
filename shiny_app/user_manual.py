@@ -449,7 +449,7 @@ def _forest_plots() -> ui.Tag:
             "Each row draws a marker with a horizontal error bar and a "
             "low-opacity interval band. Because a forest CSV can carry dozens "
             "of rows, the Series panel collapses to a single compact control: "
-            "one Show-overlay toggle, one Mask toggle, and one ΔE slider that "
+            "one Show-overlay toggle, one Mask toggle, and one ΔE field that "
             "apply to every row at once.",
             ui.TagList(
                 "Click a marker to select its center, or click the left/right "
@@ -517,7 +517,7 @@ def _mask_preview() -> ui.Tag:
         "mask_preview",
         _p("Each series row on the Overlay tab's ", _code("Series"),
            " panel exposes a ", _code("Mask"),
-           " checkbox and a ", _code("ΔE"), " slider (range 1–40, "
+           " checkbox and a ", _code("ΔE"), " number field (range 1–100, "
            "default 10). Enabling Mask repaints all source-image pixels "
            "within ΔE of the series color, replacing them with the "
            "detected background color so the underlying plot line "
@@ -678,6 +678,12 @@ def _overlay_editing() -> ui.Tag:
             "Original values are preserved — every edited row carries "
             "original_* audit columns alongside the edited values, and "
             "edited points are visually marked on the overlay.",
+            ui.TagList(
+                ui.tags.strong("Series"), " panel — the ", _code("Overlay"),
+                " checkbox and the plot's legend entry are the same switch: "
+                "clicking either one hides or shows that series in both "
+                "places.",
+            ),
             ui.TagList(
                 ui.tags.strong("Floating zoom bubble"),
                 " — appears when a point is selected and the Overlay tab "
@@ -952,7 +958,7 @@ def _troubleshooting() -> ui.Tag:
             ),
             ui.TagList(
                 ui.tags.strong("Mask is too aggressive / too loose:"),
-                " adjust the per-series ΔE slider. Lower = stricter match. "
+                " adjust the per-series ΔE field. Lower = stricter match. "
                 "A series whose color is the auto-palette default can't be "
                 "masked — pick a color that actually appears in the image "
                 "first.",

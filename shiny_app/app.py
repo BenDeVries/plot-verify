@@ -453,7 +453,7 @@ def _color_id(series_name: str) -> str:
 
 
 def _delta_e_id(series_name: str) -> str:
-    """Return a valid Shiny input ID for a per-series ΔE threshold slider."""
+    """Return a valid Shiny input ID for a per-series ΔE threshold field."""
     return "de_" + _safe_series_token(series_name)
 
 
@@ -466,9 +466,29 @@ def _mask_id(series_name: str) -> str:
 
 
 DEFAULT_DELTA_E = 10
+DELTA_E_MIN = 1
+DELTA_E_MAX = 100
+
+
+def _coerce_delta_e(raw) -> Optional[int]:
+    """Clamp a raw ΔE field value into range; None when it is not a number.
+
+    ``input_numeric`` yields None while the field is empty mid-edit, which must
+    leave the stored threshold untouched rather than snapping it to a default.
+    """
+    try:
+        val = int(round(float(raw)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return max(DELTA_E_MIN, min(DELTA_E_MAX, val))
 
 
 _ANCHOR_KEY_SCRIPT = """<style>
+/* Per-series ΔE field: strip the label/margin so it sits on the series row */
+.pv-de-cell .shiny-input-container { margin-bottom: 0; }
+.pv-de-cell label { display: none; }
+.pv-de-cell input { text-align: center; padding: 2px 4px; font-size: 13px; }
+
 /* Allow file-upload progress text to wrap rather than clip in the sidebar */
 .shiny-file-input-progress {
     overflow: visible;
@@ -625,6 +645,31 @@ _ANCHOR_KEY_SCRIPT = """<style>
                         }
                     }
                 }
+            });
+
+            // Legend entries and the "Overlay" checkboxes in the Series panel
+            // are two views of one state. Forward the click so the server can
+            // flip the matching checkbox; Plotly's own toggle still runs for
+            // instant feedback and the rebuild lands on the same visibility.
+            plot.on('plotly_legendclick', function(ev) {
+                if (!isOverlayPlot) return;
+                var tr = ev && ev.data && ev.data[ev.curveNumber];
+                var series = tr && (tr.legendgroup || tr.name);
+                if (!series) return;
+                log('legend toggle: ' + series);
+                if (typeof Shiny !== 'undefined' && Shiny.setInputValue) {
+                    Shiny.setInputValue(
+                        'overlay_legend_toggle',
+                        {series: series, ts: Date.now()},
+                        {priority: 'event'}
+                    );
+                }
+            });
+
+            // Double-click isolates one series client-side only, which would
+            // leave the checkboxes describing a different figure.
+            plot.on('plotly_legenddoubleclick', function() {
+                return isOverlayPlot ? false : undefined;
             });
 
             // Box/lasso select → multi-selection. Dedupe pids because the
@@ -1814,8 +1859,9 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                             arr_plus[li] = max(0.0, float(new_upper) - _e_base)
                         if _l_ok:
                             arr_minus[li] = max(0.0, _e_base - float(new_lower))
-                    # Ribbon: locate this point by its previous x.
-                    if rib is not None and _u_ok and _l_ok:
+                    # Ribbon: locate this point by its previous x. A missing
+                    # bound collapses onto the point estimate (one-sided band).
+                    if rib is not None and (_u_ok or _l_ok):
                         rxs, rys_u, rys_l = rib
                         rib_idx = next(
                             (ri for ri, rx in enumerate(rxs)
@@ -1824,8 +1870,8 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                         )
                         if rib_idx is not None:
                             rxs[rib_idx] = float(new_x)
-                            rys_u[rib_idx] = float(new_upper)
-                            rys_l[rib_idx] = float(new_lower)
+                            rys_u[rib_idx] = float(new_upper) if _u_ok else float(new_y)
+                            rys_l[rib_idx] = float(new_lower) if _l_ok else float(new_y)
                     # Clickable caps: (bound, category-y) in horizontal
                     # layouts; (x, bound) in vertical ones.
                     for cap_tr, val in ((cap_u_tr, new_upper), (cap_l_tr, new_lower)):
@@ -1870,11 +1916,13 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                         if str(p.point_id).rsplit("#", 1)[0] != series:
                             continue
                         u, l = p.y_err_upper, p.y_err_lower
-                        if (u is None or l is None
-                                or not np.isfinite(float(u))
-                                or not np.isfinite(float(l))):
+                        u_ok = u is not None and np.isfinite(float(u))
+                        l_ok = l is not None and np.isfinite(float(l))
+                        if not (u_ok or l_ok):
                             continue
-                        lo, hi, yc = float(l), float(u), float(p.y)
+                        lo = float(l) if l_ok else float(p.x)
+                        hi = float(u) if u_ok else float(p.x)
+                        yc = float(p.y)
                         band_x += [lo, hi, hi, lo, lo, None]
                         band_y += [yc - hh, yc - hh, yc + hh, yc + hh, yc - hh, None]
                     rib_band_tr.x = band_x
@@ -1952,11 +2000,15 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
         x_full = abs(_plot(x_right_d, x_log) - _plot(x_left_d, x_log))
         y_full = abs(_plot(y_top_d, y_log) - _plot(y_bot_d, y_log))
 
-        _has_iv = (new_upper is not None and np.isfinite(float(new_upper))
-                   and new_lower is not None and np.isfinite(float(new_lower)))
+        # A one-sided interval collapses its missing bound onto the point
+        # estimate, matching build_zoom_bubble_figure.
+        _has_iv = _u_ok or _l_ok
+        _v_c = float(new_x) if is_horiz else float(new_y)
+        _eff_u = float(new_upper) if _u_ok else _v_c
+        _eff_l = float(new_lower) if _l_ok else _v_c
         if is_horiz:
             # Interval runs along x; keep the vertical (category) framing steady.
-            err_w_plot = (abs(_plot(float(new_upper), x_log) - _plot(float(new_lower), x_log))
+            err_w_plot = (abs(_plot(_eff_u, x_log) - _plot(_eff_l, x_log))
                           if _has_iv else None)
             x_zoom_r = err_w_plot * 0.8 if (err_w_plot and err_w_plot > 0) else x_full * 0.05
             try:
@@ -1967,7 +2019,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 y_zoom_r = y_full * 0.05
         else:
             x_zoom_r = x_full * 0.05
-            err_h_plot = (abs(_plot(float(new_upper), y_log) - _plot(float(new_lower), y_log))
+            err_h_plot = (abs(_plot(_eff_u, y_log) - _plot(_eff_l, y_log))
                           if _has_iv else None)
             if err_h_plot is not None and err_h_plot > 0:
                 y_zoom_r = err_h_plot * 0.8
@@ -2001,13 +2053,10 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 bub_pt.x = [float(new_x)]
                 bub_pt.y = [float(new_y)]
                 # Interval brackets x for horizontal layouts, y otherwise.
-                _base = float(new_x) if is_horiz else float(new_y)
                 ebar = bub_pt.error_x if is_horiz else bub_pt.error_y
-                if ebar is not None:
-                    if new_upper is not None and np.isfinite(float(new_upper)):
-                        ebar.array = [max(0.0, float(new_upper) - _base)]
-                    if new_lower is not None and np.isfinite(float(new_lower)):
-                        ebar.arrayminus = [max(0.0, _base - float(new_lower))]
+                if ebar is not None and _has_iv:
+                    ebar.array = [max(0.0, _eff_u - _v_c)]
+                    ebar.arrayminus = [max(0.0, _v_c - _eff_l)]
             if bub_sel is not None:
                 bub_sel.x = [focus_x]
                 bub_sel.y = [focus_y]
@@ -2017,7 +2066,7 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             if bub_hline is not None:
                 bub_hline.y = [focus_y, focus_y]
             if bub_ribbon is not None and _has_iv:
-                lo, hi = float(new_lower), float(new_upper)
+                lo, hi = _eff_l, _eff_u
                 if is_horiz:
                     bh = y_zoom_r * 0.12
                     y_c = float(new_y)
@@ -2493,10 +2542,13 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
             vis_all = _safe_bool(lambda: input.forest_vis(), True)
             mask_all = _safe_bool(lambda: input.forest_mask(), False)
             try:
-                de_all = int(input.forest_de())
+                de_all = _coerce_delta_e(input.forest_de())
             except Exception:
-                de_all = DEFAULT_DELTA_E
+                de_all = None
             names = df["series"].drop_duplicates().tolist()
+            if de_all is None:
+                de_all = int(fs.series_delta_e.get(names[0], DEFAULT_DELTA_E)
+                             if names else DEFAULT_DELTA_E)
             visibility = {n: vis_all for n in names}
             mask_active = {n: mask_all for n in names}
             for n in names:
@@ -2606,11 +2658,13 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
     @render.ui
     def series_visibility_panel():
-        # csv_revision bumps on CSV upload; overlay_revision covers other
-        # state changes. Subscribing to both ensures the panel re-renders as
-        # soon as a CSV is attached.
+        # Deliberately NOT subscribed to overlay_revision: this panel *writes*
+        # to it (via _sync_series_delta_e), so re-rendering on it would tear
+        # down and re-seed the controls mid-interaction — the ΔE field would
+        # snap back to a stale value and the checkboxes would reset to their
+        # defaults. csv_revision + file_id cover every case where the series
+        # list itself changes.
         _ = csv_revision()
-        _ = overlay_revision()
         fid = file_id_rv()
         fs = pv.state.files.get(fid) if fid is not None else None
         if fs is None or fs.csv_df is None:
@@ -2633,14 +2687,15 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                 ui.input_checkbox("forest_vis", "Show overlay", value=True),
                 ui.input_checkbox("forest_mask", "Mask source colors",
                                   value=False),
-                ui.input_slider("forest_de", "ΔE threshold",
-                                min=1, max=40, value=int(de_val), step=1),
+                ui.input_numeric("forest_de", "ΔE threshold",
+                                 value=int(de_val), min=DELTA_E_MIN,
+                                 max=DELTA_E_MAX, step=1, width="90px"),
             )
         header = ui.div(
             ui.div("", style="flex:1 1 auto;"),
             ui.div("Overlay", style="width:60px;text-align:center;font-size:11px;color:#555;"),
             ui.div("Mask", style="width:50px;text-align:center;font-size:11px;color:#555;"),
-            ui.div("ΔE", style="width:140px;text-align:center;font-size:11px;color:#555;"),
+            ui.div("ΔE", style="width:80px;text-align:center;font-size:11px;color:#555;"),
             style=("display:flex;align-items:center;gap:6px;"
                    "padding:2px 0;border-bottom:1px solid #ddd;"),
         )
@@ -2661,16 +2716,36 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
                     style="width:50px;display:flex;justify-content:center;",
                 ),
                 ui.div(
-                    ui.input_slider(_delta_e_id(name), None,
-                                     min=1, max=40, value=int(de_val),
-                                     step=1, width="130px"),
-                    style="width:140px;",
+                    ui.input_numeric(_delta_e_id(name), None,
+                                     value=int(de_val), min=DELTA_E_MIN,
+                                     max=DELTA_E_MAX, step=1, width="70px"),
+                    class_="pv-de-cell",
+                    style="width:80px;display:flex;justify-content:center;",
                 ),
                 style=("display:flex;align-items:center;gap:6px;"
                        "padding:2px 0;border-bottom:1px solid #eee;"),
             )
             items.append(row)
         return ui.div(*items)
+
+    @reactive.effect
+    @reactive.event(input.overlay_legend_toggle)
+    def _on_overlay_legend_toggle():
+        """Mirror a Plotly legend click onto the series' Overlay checkbox."""
+        msg = input.overlay_legend_toggle() or {}
+        clicked = str(msg.get("series") or "")
+        fid = file_id_rv()
+        fs = pv.state.files.get(fid) if fid is not None else None
+        if not clicked or fs is None or fs.csv_df is None:
+            return
+        match = next((n for n in fs.csv_df["series"].drop_duplicates().tolist()
+                      if str(n) == clicked), None)
+        if match is None:
+            _trace("legend_toggle.unknown_series", series=clicked)
+            return
+        vid = _vis_id(match)
+        ui.update_checkbox(vid, value=not _safe_bool(
+            lambda: input[vid](), True, vid))
 
     @render.ui
     def dashboard_panel():
@@ -3123,25 +3198,37 @@ def server(input, output, session):  # noqa: A002 (`input` is a Shiny convention
 
     @reactive.effect
     def _sync_series_delta_e():
-        """Mirror ΔE sliders into PerFileState. See sibling effect for csv_revision rationale."""
+        """Mirror ΔE fields into PerFileState. See sibling effect for csv_revision rationale."""
         _ = csv_revision()
         fid = file_id_rv()
         fs = pv.state.files.get(fid) if fid is not None else None
         if fs is None or fs.csv_df is None:
             return
-        changed = False
+        touched: list[str] = []
         for name in fs.csv_df["series"].drop_duplicates().tolist():
             try:
-                val = int(input[_delta_e_id(name)]())
+                raw = input[_delta_e_id(name)]()
             except Exception:
+                continue
+            val = _coerce_delta_e(raw)
+            if val is None:
                 continue
             if fs.series_delta_e.get(name) != val:
                 fs.series_delta_e[name] = val
-                changed = True
-        if changed:
-            with reactive.isolate():
-                _cur = overlay_revision()
-            overlay_revision.set(_cur + 1)
+                touched.append(name)
+        if not touched:
+            return
+        # A threshold only changes pixels for a series that is currently
+        # masked; editing it with the mask off just parks the value in state.
+        # Read the mask toggles isolated so this effect stays driven purely by
+        # the ΔE fields.
+        with reactive.isolate():
+            repaint = any(
+                _safe_bool(lambda n=n: input[_mask_id(n)](), False)
+                for n in touched
+            )
+        if repaint:
+            _bump_overlay()
 
     @render.ui
     def overlay_selection_status():
