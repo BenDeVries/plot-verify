@@ -33,11 +33,16 @@ class OverlayTrace:
     series: str
     x: np.ndarray
     y: np.ndarray
-    # `has_err` is True where both lower and upper are finite for that index.
+    # `has_err` is True where at least one of lower/upper is finite (a
+    # one-sided interval counts); `has_upper`/`has_lower` say which side.
     has_err: np.ndarray
-    err_array_plus: np.ndarray         # upper - y, zero where !has_err
-    err_array_minus: np.ndarray        # y - lower, zero where !has_err
+    has_upper: np.ndarray
+    has_lower: np.ndarray
+    err_array_plus: np.ndarray         # upper - y, zero where !has_upper
+    err_array_minus: np.ndarray        # y - lower, zero where !has_lower
     # Ribbon coordinates (sorted by x, only rows where has_err); empty if none.
+    # A missing bound collapses to the point estimate, so a one-sided interval
+    # draws a ribbon from the point out to the bound it does have.
     ribbon_x: np.ndarray
     ribbon_y_upper: np.ndarray
     ribbon_y_lower: np.ndarray
@@ -110,18 +115,20 @@ def build_overlay_traces(
         y = sdf["y"].to_numpy(dtype=float)
         eu = sdf["y_err_upper"].to_numpy(dtype=float) if "y_err_upper" in sdf.columns else np.full(len(sdf), np.nan)
         el = sdf["y_err_lower"].to_numpy(dtype=float) if "y_err_lower" in sdf.columns else np.full(len(sdf), np.nan)
-        has_err = np.isfinite(eu) & np.isfinite(el)
+        has_upper = np.isfinite(eu)
+        has_lower = np.isfinite(el)
+        has_err = has_upper | has_lower
 
         # The interval brackets the value axis: `x` in horizontal layouts.
         base = x if is_horiz else y
-        err_plus = np.where(has_err, eu - base, 0.0)
-        err_minus = np.where(has_err, base - el, 0.0)
+        err_plus = np.where(has_upper, eu - base, 0.0)
+        err_minus = np.where(has_lower, base - el, 0.0)
 
         # A vertical ribbon fill only makes sense for continuous y-axis types.
         if has_err.any() and not is_forest and not is_bar and not is_box:
             x_rib = x[has_err]
-            y_upper = eu[has_err]
-            y_lower = el[has_err]
+            y_upper = np.where(has_upper, eu, y)[has_err]
+            y_lower = np.where(has_lower, el, y)[has_err]
             order = np.argsort(x_rib)
             x_rib = x_rib[order]
             y_upper = y_upper[order]
@@ -163,6 +170,8 @@ def build_overlay_traces(
             series=str(series_name),
             x=x, y=y,
             has_err=has_err,
+            has_upper=has_upper,
+            has_lower=has_lower,
             err_array_plus=err_plus,
             err_array_minus=err_minus,
             ribbon_x=x_rib,
